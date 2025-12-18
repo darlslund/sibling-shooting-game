@@ -1,38 +1,5 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NEXUS ARENA - Multiplayer Combat</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      overflow: hidden;
-      font-family: 'Orbitron', sans-serif;
-    }
-    #root {
-      width: 100vw;
-      height: 100vh;
-    }
-  </style>
-  <!-- Load React and ReactDOM from CDN -->
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  
-  <!-- Load Three.js from CDN -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  
-  <!-- Load Babel Standalone for JSX -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body>
-  <div id="root"></div>
-  
-  <script type="text/babel">
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as THREE from 'three';
 
 const SpaceCombatGame = () => {
   // Game states
@@ -2193,11 +2160,4 @@ const SpaceCombatGame = () => {
   );
 };
 
-
-    // Render the app
-    const { useState, useEffect, useRef, useCallback } = React;
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<SpaceCombatGame />);
-  </script>
-</body>
-</html>
+export default SpaceCombatGame;
