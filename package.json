@@ -1,0 +1,17 @@
+{
+  "name": "nexus-arena-multiplayer",
+  "version": "1.0.0",
+  "description": "Multiplayer 3D browser shooting game with lobby system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["game", "multiplayer", "websocket", "three.js"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2",
+    "express": "^4.18.2"
+  }
+}
