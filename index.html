@@ -570,9 +570,9 @@ const SpaceCombatGame = () => {
     });
     setEnemies(initialEnemies);
 
-    // Generate bushes for hiding
+    // Generate bushes for hiding (reduced for performance)
     const initialBushes = [];
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 10; i++) {
       initialBushes.push({
         id: Math.random(),
         position: {
@@ -585,9 +585,9 @@ const SpaceCombatGame = () => {
     }
     setBushes(initialBushes);
 
-    // Generate trees for filler
+    // Generate trees for filler (reduced for performance)
     const initialTrees = [];
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < 15; i++) {
       initialTrees.push({
         id: Math.random(),
         position: {
@@ -599,7 +599,58 @@ const SpaceCombatGame = () => {
       });
     }
     setTrees(initialTrees);
-    
+
+    // Render static bushes (only once, not every frame)
+    initialBushes.forEach(bush => {
+      const geometry = new THREE.SphereGeometry(bush.radius, 8, 8);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x2d5016, // Dark green
+        roughness: 0.9,
+        metalness: 0.0
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(bush.position.x, bush.radius * 0.7, bush.position.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.isBush = true;
+      mesh.userData.isStatic = true; // Mark as static so it doesn't get removed
+      mesh.userData.id = bush.id;
+      scene.add(mesh);
+    });
+
+    // Render static trees (only once, not every frame)
+    initialTrees.forEach(tree => {
+      const group = new THREE.Group();
+
+      // Trunk
+      const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, tree.height * 0.6, 8);
+      const trunkMaterial = new THREE.MeshStandardMaterial({
+        color: 0x4a2511, // Brown trunk
+        roughness: 0.9
+      });
+      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+      trunk.position.y = tree.height * 0.3;
+      trunk.castShadow = true;
+      group.add(trunk);
+
+      // Foliage
+      const foliageGeometry = new THREE.ConeGeometry(1.2, tree.height * 0.7, 8);
+      const foliageMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1a4d0a, // Dark green foliage
+        roughness: 0.8
+      });
+      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+      foliage.position.y = tree.height * 0.8;
+      foliage.castShadow = true;
+      group.add(foliage);
+
+      group.position.set(tree.position.x, 0, tree.position.z);
+      group.userData.isTree = true;
+      group.userData.isStatic = true; // Mark as static so it doesn't get removed
+      group.userData.id = tree.id;
+      scene.add(group);
+    });
+
     // Handle window resize
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -770,19 +821,45 @@ const SpaceCombatGame = () => {
           return enemy; // Don't process AI for dead bots
         }
 
-        const dx = player.position.x - enemy.position.x;
-        const dz = player.position.z - enemy.position.z;
-        const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+        // Find nearest enemy (different team)
+        let nearestEnemy = null;
+        let nearestDist = Infinity;
 
-        // AI behavior
-        if (enemy.aiState.behavior === 'aggressive' && distToPlayer < 30) {
-          // Chase player
+        // Check player (only if different team)
+        if (player.team !== enemy.team && selectedTeam !== enemy.team) {
+          const dx = player.position.x - enemy.position.x;
+          const dz = player.position.z - enemy.position.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestEnemy = { position: player.position, isPlayer: true };
+          }
+        }
+
+        // Check other bots (only if different team)
+        prevEnemies.forEach(otherBot => {
+          if (otherBot.id !== enemy.id && otherBot.team !== enemy.team && !otherBot.isDead) {
+            const dx = otherBot.position.x - enemy.position.x;
+            const dz = otherBot.position.z - enemy.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist < nearestDist) {
+              nearestDist = dist;
+              nearestEnemy = { position: otherBot.position, isPlayer: false };
+            }
+          }
+        });
+
+        // AI behavior - target nearest enemy
+        if (enemy.aiState.behavior === 'aggressive' && nearestEnemy && nearestDist < 30) {
+          // Chase nearest enemy
+          const dx = nearestEnemy.position.x - enemy.position.x;
+          const dz = nearestEnemy.position.z - enemy.position.z;
           const angle = Math.atan2(dz, dx);
           enemy.position.x += Math.cos(angle) * 8 * deltaTime;
           enemy.position.z += Math.sin(angle) * 8 * deltaTime;
           enemy.rotation = angle - Math.PI / 2;
 
-          // Shoot at player
+          // Shoot at nearest enemy
           if (currentTime - enemy.aiState.lastShot > 1000) {
             shootEnemy(enemy);
             enemy.aiState.lastShot = currentTime;
@@ -879,10 +956,10 @@ const SpaceCombatGame = () => {
   useEffect(() => {
     if (!sceneRef.current || gameState !== 'playing') return;
     
-    // Clear old objects
+    // Clear old dynamic objects (but keep static bushes and trees)
     const objectsToRemove = [];
     sceneRef.current.children.forEach(child => {
-      if (child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle || child.userData.isMultiplayerPlayer || child.userData.isBush || child.userData.isTree) {
+      if ((child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle || child.userData.isMultiplayerPlayer) && !child.userData.isStatic) {
         objectsToRemove.push(child);
       }
     });
@@ -907,55 +984,6 @@ const SpaceCombatGame = () => {
       mesh.userData.isRock = true;
       mesh.userData.id = rock.id;
       sceneRef.current.add(mesh);
-    });
-
-    // Render bushes
-    bushes.forEach(bush => {
-      const geometry = new THREE.SphereGeometry(bush.radius, 8, 8);
-      const material = new THREE.MeshStandardMaterial({
-        color: 0x2d5016, // Dark green
-        roughness: 0.9,
-        metalness: 0.0
-      });
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(bush.position.x, bush.radius * 0.7, bush.position.z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData.isBush = true;
-      mesh.userData.id = bush.id;
-      sceneRef.current.add(mesh);
-    });
-
-    // Render trees
-    trees.forEach(tree => {
-      const group = new THREE.Group();
-
-      // Trunk
-      const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, tree.height * 0.6, 8);
-      const trunkMaterial = new THREE.MeshStandardMaterial({
-        color: 0x4a2511, // Brown trunk
-        roughness: 0.9
-      });
-      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-      trunk.position.y = tree.height * 0.3;
-      trunk.castShadow = true;
-      group.add(trunk);
-
-      // Foliage
-      const foliageGeometry = new THREE.ConeGeometry(1.2, tree.height * 0.7, 8);
-      const foliageMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1a4d0a, // Dark green foliage
-        roughness: 0.8
-      });
-      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
-      foliage.position.y = tree.height * 0.8;
-      foliage.castShadow = true;
-      group.add(foliage);
-
-      group.position.set(tree.position.x, 0, tree.position.z);
-      group.userData.isTree = true;
-      group.userData.id = tree.id;
-      sceneRef.current.add(group);
     });
     
     // Render enemies as human characters (bigger size)
@@ -1136,7 +1164,7 @@ const SpaceCombatGame = () => {
       sceneRef.current.add(mesh);
     });
     
-  }, [rocks, enemies, projectiles, particles, bushes, trees, gameState, multiplayerState]);
+  }, [rocks, enemies, projectiles, particles, gameState, multiplayerState]);
   
   const shootTowardsMouse = (x, z, mouseX, mouseZ) => {
     // Calculate direction from player to mouse
@@ -1231,20 +1259,22 @@ const SpaceCombatGame = () => {
       enemy.position.x,
       enemy.position.z,
       enemy.rotation + Math.PI / 2,
-      false
+      false,
+      enemy.team
     );
     setProjectiles(prev => [...prev, proj]);
   };
-  
-  const createProjectile = (x, z, direction, isPlayer) => ({
+
+  const createProjectile = (x, z, direction, isPlayer, team = null) => ({
     id: Math.random(),
     position: { x, y: 1, z },
     direction,
     speed: 40,
     lifetime: 3,
     damage: isPlayer ? player.upgrades.damage * 10 : 10,
-    color: isPlayer ? teams[selectedTeam].color : 0xff0000,
-    isPlayerProjectile: isPlayer
+    color: isPlayer ? teams[selectedTeam].color : teams[team]?.color || 0xff0000,
+    isPlayerProjectile: isPlayer,
+    team: isPlayer ? selectedTeam : team
   });
   
   const checkCollisions = () => {
@@ -1279,36 +1309,37 @@ const SpaceCombatGame = () => {
         });
         
         // Check enemy collisions (bigger characters need bigger collision radius)
-        if (proj.isPlayerProjectile) {
-          setEnemies(prevEnemies => {
-            return prevEnemies.map(enemy => {
-              if (enemy.isDead) return enemy; // Skip dead enemies
+        // Only damage if different team (no friendly fire)
+        setEnemies(prevEnemies => {
+          return prevEnemies.map(enemy => {
+            if (enemy.isDead) return enemy; // Skip dead enemies
+            if (proj.team === enemy.team) return enemy; // Skip same team (no friendly fire)
 
-              const dx = proj.position.x - enemy.position.x;
-              const dz = proj.position.z - enemy.position.z;
-              const dist = Math.sqrt(dx * dx + dz * dz);
+            const dx = proj.position.x - enemy.position.x;
+            const dz = proj.position.z - enemy.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
 
-              if (dist < 3) { // Increased from 2 to 3 for bigger characters
-                enemy.health -= proj.damage;
-                createParticles(enemy.position.x, enemy.position.z, teams[enemy.team].color);
+            if (dist < 3) { // Increased from 2 to 3 for bigger characters
+              enemy.health -= proj.damage;
+              createParticles(enemy.position.x, enemy.position.z, teams[enemy.team].color);
 
-                const index = remaining.findIndex(p => p.id === proj.id);
-                if (index !== -1) remaining.splice(index, 1);
+              const index = remaining.findIndex(p => p.id === proj.id);
+              if (index !== -1) remaining.splice(index, 1);
 
-                if (enemy.health <= 0) {
-                  gainXP(50 * enemy.level);
-                  // Mark as dead instead of removing, will respawn after 10 seconds
-                  enemy.isDead = true;
-                  enemy.deathTime = currentTime;
-                }
+              if (enemy.health <= 0) {
+                gainXP(50 * enemy.level);
+                // Mark as dead instead of removing, will respawn after 10 seconds
+                enemy.isDead = true;
+                enemy.deathTime = currentTime;
               }
-              return enemy;
-            });
+            }
+            return enemy;
           });
-        }
+        });
 
-        // Check player collision with enemy projectiles (bigger characters)
-        if (!proj.isPlayerProjectile) {
+        // Check player collision with projectiles (bigger characters)
+        // Only damage if different team (no friendly fire)
+        if (proj.team !== selectedTeam) {
           const dx = proj.position.x - player.position.x;
           const dz = proj.position.z - player.position.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
