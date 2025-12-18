@@ -95,6 +95,8 @@ const SpaceCombatGame = () => {
   const [rocks, setRocks] = useState([]);
   const [projectiles, setProjectiles] = useState([]);
   const [particles, setParticles] = useState([]);
+  const [bushes, setBushes] = useState([]);
+  const [trees, setTrees] = useState([]);
   
   // Refs
   const mountRef = useRef(null);
@@ -112,6 +114,24 @@ const SpaceCombatGame = () => {
     black: { name: 'Black Team', color: 0x1a1a1a, glowColor: '#1a1a1a' },
     purple: { name: 'Purple Team', color: 0x9933ff, glowColor: '#9933ff' },
     yellow: { name: 'Yellow Team', color: 0xffff00, glowColor: '#ffff00' }
+  };
+
+  // Team spawn areas
+  const spawnAreas = {
+    black: { x: -30, z: -30, radius: 10 },
+    purple: { x: 30, z: 30, radius: 10 },
+    yellow: { x: 30, z: -30, radius: 10 }
+  };
+
+  // Helper function to get spawn position for a team
+  const getSpawnPosition = (team) => {
+    const spawn = spawnAreas[team];
+    const angle = Math.random() * Math.PI * 2;
+    const distance = Math.random() * spawn.radius;
+    return {
+      x: spawn.x + Math.cos(angle) * distance,
+      z: spawn.z + Math.sin(angle) * distance
+    };
   };
   
   // WebSocket connection management
@@ -477,14 +497,14 @@ const SpaceCombatGame = () => {
       rightLeg.castShadow = true;
       group.add(rightLeg);
 
-      // Weapon indicator (points forward) - 1.5x bigger
+      // Weapon indicator (points forward) - 1.5x bigger, positioned at right side
       const weaponGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.75);
       const weaponMaterial = new THREE.MeshStandardMaterial({
         color: 0x444444,
         metalness: 0.8
       });
       const weapon = new THREE.Mesh(weaponGeometry, weaponMaterial);
-      weapon.position.set(0, 1.2, 0.6);
+      weapon.position.set(0.5, 1.2, 0.6); // Moved to right side
       group.add(weapon);
 
       return group;
@@ -495,9 +515,11 @@ const SpaceCombatGame = () => {
     scene.add(playerCharacter);
     playerMeshRef.current = playerCharacter;
     
-    // Generate initial rocks
+    // Generate initial leaf piles (formerly rocks)
     const initialRocks = [];
     for (let i = 0; i < 20; i++) {
+      const size = Math.random() < 0.5 ? 'small' : 'large'; // Small or large piles
+      const health = size === 'small' ? 20 : 40;
       initialRocks.push({
         id: Math.random(),
         position: {
@@ -505,9 +527,13 @@ const SpaceCombatGame = () => {
           y: 0,
           z: (Math.random() - 0.5) * 80
         },
-        health: 30,
-        maxHealth: 30,
-        rotation: Math.random() * Math.PI * 2
+        health: health,
+        maxHealth: health,
+        rotation: Math.random() * Math.PI * 2,
+        size: size,
+        isDestroyed: false,
+        destroyedTime: 0,
+        respawnTime: size === 'small' ? 9000 : 13000 // 9s for small, 13s for large
       });
     }
     setRocks(initialRocks);
@@ -517,19 +543,22 @@ const SpaceCombatGame = () => {
     Object.keys(teams).forEach(teamKey => {
       const botCount = botConfig[teamKey] || 0;
       for (let i = 0; i < botCount; i++) {
+        const spawnPos = getSpawnPosition(teamKey);
         initialEnemies.push({
           id: Math.random(),
           name: `Bot ${teamKey.charAt(0).toUpperCase()}${i + 1}`,
           team: teamKey,
           position: {
-            x: (Math.random() - 0.5) * 80,
+            x: spawnPos.x,
             y: 0,
-            z: (Math.random() - 0.5) * 80
+            z: spawnPos.z
           },
           rotation: Math.random() * Math.PI * 2,
           health: 100,
           maxHealth: 100,
           level: 1,
+          isDead: false,
+          deathTime: 0,
           aiState: {
             targetX: 0,
             targetZ: 0,
@@ -540,6 +569,36 @@ const SpaceCombatGame = () => {
       }
     });
     setEnemies(initialEnemies);
+
+    // Generate bushes for hiding
+    const initialBushes = [];
+    for (let i = 0; i < 15; i++) {
+      initialBushes.push({
+        id: Math.random(),
+        position: {
+          x: (Math.random() - 0.5) * 90,
+          y: 0,
+          z: (Math.random() - 0.5) * 90
+        },
+        radius: 2
+      });
+    }
+    setBushes(initialBushes);
+
+    // Generate trees for filler
+    const initialTrees = [];
+    for (let i = 0; i < 25; i++) {
+      initialTrees.push({
+        id: Math.random(),
+        position: {
+          x: (Math.random() - 0.5) * 95,
+          y: 0,
+          z: (Math.random() - 0.5) * 95
+        },
+        height: 3 + Math.random() * 2
+      });
+    }
+    setTrees(initialTrees);
     
     // Handle window resize
     const handleResize = () => {
@@ -621,8 +680,8 @@ const SpaceCombatGame = () => {
       const deltaTime = (currentTime - lastTime) / 1000;
       lastTime = currentTime;
       
-      // Player movement
-      const moveSpeed = 15 * deltaTime;
+      // Player movement (decreased base dexterity)
+      const moveSpeed = 10 * deltaTime;
       let newX = player.position.x;
       let newZ = player.position.z;
 
@@ -696,10 +755,25 @@ const SpaceCombatGame = () => {
       
       // Update enemies (AI)
       setEnemies(prevEnemies => prevEnemies.map(enemy => {
+        // Check if bot should respawn (after 10 seconds)
+        if (enemy.isDead) {
+          const timeSinceDeath = currentTime - enemy.deathTime;
+          if (timeSinceDeath > 10000) { // 10 seconds
+            // Respawn bot at team spawn area
+            const spawnPos = getSpawnPosition(enemy.team);
+            enemy.position.x = spawnPos.x;
+            enemy.position.z = spawnPos.z;
+            enemy.health = enemy.maxHealth;
+            enemy.isDead = false;
+            enemy.deathTime = 0;
+          }
+          return enemy; // Don't process AI for dead bots
+        }
+
         const dx = player.position.x - enemy.position.x;
         const dz = player.position.z - enemy.position.z;
         const distToPlayer = Math.sqrt(dx * dx + dz * dz);
-        
+
         // AI behavior
         if (enemy.aiState.behavior === 'aggressive' && distToPlayer < 30) {
           // Chase player
@@ -707,7 +781,7 @@ const SpaceCombatGame = () => {
           enemy.position.x += Math.cos(angle) * 8 * deltaTime;
           enemy.position.z += Math.sin(angle) * 8 * deltaTime;
           enemy.rotation = angle - Math.PI / 2;
-          
+
           // Shoot at player
           if (currentTime - enemy.aiState.lastShot > 1000) {
             shootEnemy(enemy);
@@ -719,25 +793,39 @@ const SpaceCombatGame = () => {
             enemy.aiState.targetX = (Math.random() - 0.5) * 80;
             enemy.aiState.targetZ = (Math.random() - 0.5) * 80;
           }
-          
+
           const tdx = enemy.aiState.targetX - enemy.position.x;
           const tdz = enemy.aiState.targetZ - enemy.position.z;
           const dist = Math.sqrt(tdx * tdx + tdz * tdz);
-          
+
           if (dist > 2) {
             enemy.position.x += (tdx / dist) * 6 * deltaTime;
             enemy.position.z += (tdz / dist) * 6 * deltaTime;
             enemy.rotation = Math.atan2(tdz, tdx) - Math.PI / 2;
           }
         }
-        
+
         // Bounds
         enemy.position.x = Math.max(-48, Math.min(48, enemy.position.x));
         enemy.position.z = Math.max(-48, Math.min(48, enemy.position.z));
-        
+
         return enemy;
       }));
       
+      // Update leaf piles (respawn logic)
+      setRocks(prevRocks => prevRocks.map(rock => {
+        if (rock.isDestroyed) {
+          const timeSinceDestroyed = currentTime - rock.destroyedTime;
+          if (timeSinceDestroyed > rock.respawnTime) {
+            // Respawn leaf pile
+            rock.isDestroyed = false;
+            rock.destroyedTime = 0;
+            rock.health = rock.maxHealth;
+          }
+        }
+        return rock;
+      }));
+
       // Update projectiles
       setProjectiles(prev => {
         return prev.map(proj => {
@@ -745,8 +833,8 @@ const SpaceCombatGame = () => {
           proj.position.z += Math.sin(proj.direction) * proj.speed * deltaTime;
           proj.lifetime -= deltaTime;
           return proj;
-        }).filter(proj => proj.lifetime > 0 && 
-          Math.abs(proj.position.x) < 50 && 
+        }).filter(proj => proj.lifetime > 0 &&
+          Math.abs(proj.position.x) < 50 &&
           Math.abs(proj.position.z) < 50);
       });
       
@@ -794,31 +882,86 @@ const SpaceCombatGame = () => {
     // Clear old objects
     const objectsToRemove = [];
     sceneRef.current.children.forEach(child => {
-      if (child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle || child.userData.isMultiplayerPlayer) {
+      if (child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle || child.userData.isMultiplayerPlayer || child.userData.isBush || child.userData.isTree) {
         objectsToRemove.push(child);
       }
     });
     objectsToRemove.forEach(obj => sceneRef.current.remove(obj));
-    
-    // Render rocks
+
+    // Render leaf piles (only if not destroyed)
     rocks.forEach(rock => {
-      const geometry = new THREE.DodecahedronGeometry(2, 0);
+      if (rock.isDestroyed) return; // Don't render destroyed piles
+
+      const size = rock.size === 'small' ? 1.5 : 2.2;
+      const geometry = new THREE.SphereGeometry(size, 8, 6);
+      geometry.scale(1, 0.4, 1); // Flatten to look like a pile
       const material = new THREE.MeshStandardMaterial({
-        color: 0x666666,
-        roughness: 0.9,
-        metalness: 0.1
+        color: 0x8B4513, // Brown color for leaves
+        roughness: 0.95,
+        metalness: 0.0
       });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(rock.position.x, 1, rock.position.z);
+      mesh.position.set(rock.position.x, 0.3, rock.position.z);
       mesh.rotation.y = rock.rotation;
       mesh.castShadow = true;
       mesh.userData.isRock = true;
       mesh.userData.id = rock.id;
       sceneRef.current.add(mesh);
     });
+
+    // Render bushes
+    bushes.forEach(bush => {
+      const geometry = new THREE.SphereGeometry(bush.radius, 8, 8);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x2d5016, // Dark green
+        roughness: 0.9,
+        metalness: 0.0
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(bush.position.x, bush.radius * 0.7, bush.position.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.isBush = true;
+      mesh.userData.id = bush.id;
+      sceneRef.current.add(mesh);
+    });
+
+    // Render trees
+    trees.forEach(tree => {
+      const group = new THREE.Group();
+
+      // Trunk
+      const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, tree.height * 0.6, 8);
+      const trunkMaterial = new THREE.MeshStandardMaterial({
+        color: 0x4a2511, // Brown trunk
+        roughness: 0.9
+      });
+      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+      trunk.position.y = tree.height * 0.3;
+      trunk.castShadow = true;
+      group.add(trunk);
+
+      // Foliage
+      const foliageGeometry = new THREE.ConeGeometry(1.2, tree.height * 0.7, 8);
+      const foliageMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1a4d0a, // Dark green foliage
+        roughness: 0.8
+      });
+      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+      foliage.position.y = tree.height * 0.8;
+      foliage.castShadow = true;
+      group.add(foliage);
+
+      group.position.set(tree.position.x, 0, tree.position.z);
+      group.userData.isTree = true;
+      group.userData.id = tree.id;
+      sceneRef.current.add(group);
+    });
     
     // Render enemies as human characters (bigger size)
     enemies.forEach(enemy => {
+      if (enemy.isDead) return; // Don't render dead bots
+
       const group = new THREE.Group();
 
       // Body - 1.5x bigger
@@ -993,7 +1136,7 @@ const SpaceCombatGame = () => {
       sceneRef.current.add(mesh);
     });
     
-  }, [rocks, enemies, projectiles, particles, gameState]);
+  }, [rocks, enemies, projectiles, particles, bushes, trees, gameState, multiplayerState]);
   
   const shootTowardsMouse = (x, z, mouseX, mouseZ) => {
     // Calculate direction from player to mouse
@@ -1109,33 +1252,38 @@ const SpaceCombatGame = () => {
       const remaining = [...prevProj];
       
       prevProj.forEach(proj => {
-        // Check rock collisions
+        // Check leaf pile collisions
         setRocks(prevRocks => {
           return prevRocks.map(rock => {
+            if (rock.isDestroyed) return rock; // Skip destroyed piles
+
             const dx = proj.position.x - rock.position.x;
             const dz = proj.position.z - rock.position.z;
             const dist = Math.sqrt(dx * dx + dz * dz);
-            
+
             if (dist < 2.5 && proj.isPlayerProjectile) {
               rock.health -= proj.damage;
-              createParticles(rock.position.x, rock.position.z, 0x666666);
-              
+              createParticles(rock.position.x, rock.position.z, 0x8B4513); // Brown particles for leaves
+
               const index = remaining.findIndex(p => p.id === proj.id);
               if (index !== -1) remaining.splice(index, 1);
-              
+
               if (rock.health <= 0) {
                 gainXP(20);
-                return null;
+                rock.isDestroyed = true;
+                rock.destroyedTime = currentTime;
               }
             }
             return rock;
-          }).filter(Boolean);
+          });
         });
         
         // Check enemy collisions (bigger characters need bigger collision radius)
         if (proj.isPlayerProjectile) {
           setEnemies(prevEnemies => {
             return prevEnemies.map(enemy => {
+              if (enemy.isDead) return enemy; // Skip dead enemies
+
               const dx = proj.position.x - enemy.position.x;
               const dz = proj.position.z - enemy.position.z;
               const dist = Math.sqrt(dx * dx + dz * dz);
@@ -1149,11 +1297,13 @@ const SpaceCombatGame = () => {
 
                 if (enemy.health <= 0) {
                   gainXP(50 * enemy.level);
-                  return null;
+                  // Mark as dead instead of removing, will respawn after 10 seconds
+                  enemy.isDead = true;
+                  enemy.deathTime = currentTime;
                 }
               }
               return enemy;
-            }).filter(Boolean);
+            });
           });
         }
 
@@ -1260,12 +1410,21 @@ const SpaceCombatGame = () => {
   };
   
   const respawn = () => {
+    const spawnPos = getSpawnPosition(selectedTeam);
     setPlayer(prev => ({
       ...prev,
-      position: { x: 0, y: 0, z: 0 },
+      position: { x: spawnPos.x, y: 0, z: spawnPos.z },
       health: prev.maxHealth,
       isDead: false,
-      deathTime: 0
+      deathTime: 0,
+      level: 1, // Reset level on death
+      xp: 0,
+      upgrades: {
+        damage: 1,
+        fireRate: 1,
+        extraCannons: [],
+        directions: ['front']
+      }
     }));
   };
 
