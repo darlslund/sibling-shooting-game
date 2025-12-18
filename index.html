@@ -774,8 +774,8 @@ const SpaceCombatGame = () => {
         const dz = player.position.z - enemy.position.z;
         const distToPlayer = Math.sqrt(dx * dx + dz * dz);
 
-        // AI behavior
-        if (enemy.aiState.behavior === 'aggressive' && distToPlayer < 30) {
+        // AI behavior - only attack players on different teams
+        if (enemy.aiState.behavior === 'aggressive' && distToPlayer < 30 && enemy.team !== selectedTeam) {
           // Chase player
           const angle = Math.atan2(dz, dx);
           enemy.position.x += Math.cos(angle) * 8 * deltaTime;
@@ -1231,103 +1231,132 @@ const SpaceCombatGame = () => {
       enemy.position.x,
       enemy.position.z,
       enemy.rotation + Math.PI / 2,
-      false
+      false,
+      enemy.team
     );
     setProjectiles(prev => [...prev, proj]);
   };
-  
-  const createProjectile = (x, z, direction, isPlayer) => ({
+
+  const createProjectile = (x, z, direction, isPlayer, ownerTeam = null) => ({
     id: Math.random(),
     position: { x, y: 1, z },
     direction,
     speed: 40,
     lifetime: 3,
     damage: isPlayer ? player.upgrades.damage * 10 : 10,
-    color: isPlayer ? teams[selectedTeam].color : 0xff0000,
-    isPlayerProjectile: isPlayer
+    color: isPlayer ? teams[selectedTeam].color : teams[ownerTeam]?.color || 0xff0000,
+    isPlayerProjectile: isPlayer,
+    ownerTeam: isPlayer ? selectedTeam : ownerTeam
   });
   
   const checkCollisions = () => {
-    setProjectiles(prevProj => {
-      const remaining = [...prevProj];
-      
-      prevProj.forEach(proj => {
-        // Check leaf pile collisions
-        setRocks(prevRocks => {
-          return prevRocks.map(rock => {
-            if (rock.isDestroyed) return rock; // Skip destroyed piles
+    const collisionData = {
+      projectilesToRemove: new Set(),
+      playerDamage: 0,
+      xpGain: 0,
+      particlesToCreate: [],
+      rocksToUpdate: [],
+      enemiesToUpdate: []
+    };
 
-            const dx = proj.position.x - rock.position.x;
-            const dz = proj.position.z - rock.position.z;
-            const dist = Math.sqrt(dx * dx + dz * dz);
+    // Collect all collision data first
+    projectiles.forEach(proj => {
+      // Check leaf pile collisions
+      rocks.forEach(rock => {
+        if (rock.isDestroyed) return;
 
-            if (dist < 2.5 && proj.isPlayerProjectile) {
-              rock.health -= proj.damage;
-              createParticles(rock.position.x, rock.position.z, 0x8B4513); // Brown particles for leaves
+        const dx = proj.position.x - rock.position.x;
+        const dz = proj.position.z - rock.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
 
-              const index = remaining.findIndex(p => p.id === proj.id);
-              if (index !== -1) remaining.splice(index, 1);
-
-              if (rock.health <= 0) {
-                gainXP(20);
-                rock.isDestroyed = true;
-                rock.destroyedTime = currentTime;
-              }
-            }
-            return rock;
+        if (dist < 2.5 && proj.isPlayerProjectile) {
+          const newHealth = rock.health - proj.damage;
+          collisionData.rocksToUpdate.push({
+            id: rock.id,
+            health: newHealth,
+            isDestroyed: newHealth <= 0,
+            destroyedTime: newHealth <= 0 ? currentTime : rock.destroyedTime
           });
-        });
-        
-        // Check enemy collisions (bigger characters need bigger collision radius)
-        if (proj.isPlayerProjectile) {
-          setEnemies(prevEnemies => {
-            return prevEnemies.map(enemy => {
-              if (enemy.isDead) return enemy; // Skip dead enemies
-
-              const dx = proj.position.x - enemy.position.x;
-              const dz = proj.position.z - enemy.position.z;
-              const dist = Math.sqrt(dx * dx + dz * dz);
-
-              if (dist < 3) { // Increased from 2 to 3 for bigger characters
-                enemy.health -= proj.damage;
-                createParticles(enemy.position.x, enemy.position.z, teams[enemy.team].color);
-
-                const index = remaining.findIndex(p => p.id === proj.id);
-                if (index !== -1) remaining.splice(index, 1);
-
-                if (enemy.health <= 0) {
-                  gainXP(50 * enemy.level);
-                  // Mark as dead instead of removing, will respawn after 10 seconds
-                  enemy.isDead = true;
-                  enemy.deathTime = currentTime;
-                }
-              }
-              return enemy;
-            });
-          });
-        }
-
-        // Check player collision with enemy projectiles (bigger characters)
-        if (!proj.isPlayerProjectile) {
-          const dx = proj.position.x - player.position.x;
-          const dz = proj.position.z - player.position.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
-
-          if (dist < 3) { // Increased from 2 to 3 for bigger characters
-            setPlayer(prev => ({
-              ...prev,
-              health: Math.max(0, prev.health - proj.damage)
-            }));
-            createParticles(player.position.x, player.position.z, teams[selectedTeam].color);
-
-            const index = remaining.findIndex(p => p.id === proj.id);
-            if (index !== -1) remaining.splice(index, 1);
+          collisionData.particlesToCreate.push({ x: rock.position.x, z: rock.position.z, color: 0x8B4513 });
+          collisionData.projectilesToRemove.add(proj.id);
+          if (newHealth <= 0) {
+            collisionData.xpGain += 20;
           }
         }
       });
-      
-      return remaining;
+
+      // Check enemy collisions
+      if (proj.isPlayerProjectile || proj.ownerTeam) {
+        enemies.forEach(enemy => {
+          if (enemy.isDead) return;
+          if (proj.ownerTeam === enemy.team) return; // Skip same team
+
+          const dx = proj.position.x - enemy.position.x;
+          const dz = proj.position.z - enemy.position.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+
+          if (dist < 3) {
+            const newHealth = enemy.health - proj.damage;
+            collisionData.enemiesToUpdate.push({
+              id: enemy.id,
+              health: newHealth,
+              isDead: newHealth <= 0,
+              deathTime: newHealth <= 0 ? currentTime : enemy.deathTime
+            });
+            collisionData.particlesToCreate.push({ x: enemy.position.x, z: enemy.position.z, color: teams[enemy.team].color });
+            collisionData.projectilesToRemove.add(proj.id);
+            if (newHealth <= 0) {
+              collisionData.xpGain += 50 * enemy.level;
+            }
+          }
+        });
+      }
+
+      // Check player collision with projectiles from different teams
+      if (proj.ownerTeam && proj.ownerTeam !== selectedTeam) {
+        const dx = proj.position.x - player.position.x;
+        const dz = proj.position.z - player.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < 3) {
+          collisionData.playerDamage += proj.damage;
+          collisionData.particlesToCreate.push({ x: player.position.x, z: player.position.z, color: teams[selectedTeam].color });
+          collisionData.projectilesToRemove.add(proj.id);
+        }
+      }
     });
+
+    // Apply all state updates at once
+    if (collisionData.projectilesToRemove.size > 0) {
+      setProjectiles(prev => prev.filter(p => !collisionData.projectilesToRemove.has(p.id)));
+    }
+
+    if (collisionData.rocksToUpdate.length > 0) {
+      setRocks(prev => prev.map(rock => {
+        const update = collisionData.rocksToUpdate.find(u => u.id === rock.id);
+        return update ? { ...rock, ...update } : rock;
+      }));
+    }
+
+    if (collisionData.enemiesToUpdate.length > 0) {
+      setEnemies(prev => prev.map(enemy => {
+        const update = collisionData.enemiesToUpdate.find(u => u.id === enemy.id);
+        return update ? { ...enemy, ...update } : enemy;
+      }));
+    }
+
+    if (collisionData.playerDamage > 0) {
+      setPlayer(prev => ({
+        ...prev,
+        health: Math.max(0, prev.health - collisionData.playerDamage)
+      }));
+    }
+
+    if (collisionData.xpGain > 0) {
+      gainXP(collisionData.xpGain);
+    }
+
+    collisionData.particlesToCreate.forEach(p => createParticles(p.x, p.z, p.color));
   };
   
   const createParticles = (x, z, color) => {
