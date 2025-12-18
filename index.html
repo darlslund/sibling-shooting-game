@@ -3,10 +3,21 @@ import * as THREE from 'three';
 
 const SpaceCombatGame = () => {
   // Game states
-  const [gameState, setGameState] = useState('menu'); // 'menu', 'playing', 'paused'
+  const [gameState, setGameState] = useState('lobby'); // 'lobby', 'menu', 'playing', 'paused'
   const [playerName, setPlayerName] = useState('');
   const [selectedTeam, setSelectedTeam] = useState(null);
-  
+
+  // Multiplayer state
+  const [multiplayerState, setMultiplayerState] = useState({
+    isConnected: false,
+    roomCode: '',
+    joinCode: '',
+    playerId: null,
+    players: new Map(), // Other players in the room
+    error: null
+  });
+  const wsRef = useRef(null);
+
   // Player state
   const [player, setPlayer] = useState({
     position: { x: 0, y: 0, z: 0 },
@@ -35,7 +46,7 @@ const SpaceCombatGame = () => {
 
   // Mouse position
   const mousePosition = useRef({ x: 0, y: 0, worldX: 0, worldZ: 0 });
-  
+
   const [enemies, setEnemies] = useState([]);
   const [rocks, setRocks] = useState([]);
   const [projectiles, setProjectiles] = useState([]);
@@ -49,6 +60,7 @@ const SpaceCombatGame = () => {
   const playerMeshRef = useRef(null);
   const keysPressed = useRef({});
   const lastShotTime = useRef(0);
+  const lastUpdateTime = useRef(0);
   const animationFrameId = useRef(null);
   
   // Team configurations
@@ -58,6 +70,194 @@ const SpaceCombatGame = () => {
     green: { name: 'Green Dragons', color: 0x00ff88, glowColor: '#00ff88' }
   };
   
+  // WebSocket connection management
+  useEffect(() => {
+    const connectWebSocket = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('Connected to multiplayer server');
+        setMultiplayerState(prev => ({ ...prev, isConnected: true, error: null }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleServerMessage(data);
+        } catch (error) {
+          console.error('Error parsing server message:', error);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('Disconnected from server');
+        setMultiplayerState(prev => ({ ...prev, isConnected: false }));
+        // Attempt to reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setMultiplayerState(prev => ({ ...prev, error: 'Connection error' }));
+      };
+
+      wsRef.current = ws;
+    };
+
+    connectWebSocket();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  const handleServerMessage = (data) => {
+    const { type } = data;
+
+    switch (type) {
+      case 'ROOM_CREATED':
+        setMultiplayerState(prev => ({
+          ...prev,
+          roomCode: data.roomCode,
+          playerId: data.playerId
+        }));
+        setGameState('menu');
+        break;
+
+      case 'ROOM_JOINED':
+        setMultiplayerState(prev => ({
+          ...prev,
+          roomCode: data.roomCode,
+          playerId: data.playerId
+        }));
+        setGameState('menu');
+        break;
+
+      case 'EXISTING_PLAYERS':
+        const playersMap = new Map();
+        data.players.forEach(p => {
+          playersMap.set(p.id, p);
+        });
+        setMultiplayerState(prev => ({ ...prev, players: playersMap }));
+        break;
+
+      case 'PLAYER_JOINED':
+        setMultiplayerState(prev => {
+          const newPlayers = new Map(prev.players);
+          newPlayers.set(data.player.id, data.player);
+          return { ...prev, players: newPlayers };
+        });
+        console.log(`Player joined: ${data.player.name}`);
+        break;
+
+      case 'PLAYER_LEFT':
+        setMultiplayerState(prev => {
+          const newPlayers = new Map(prev.players);
+          newPlayers.delete(data.playerId);
+          return { ...prev, players: newPlayers };
+        });
+        console.log(`Player left: ${data.playerId}`);
+        break;
+
+      case 'PLAYER_UPDATE':
+        setMultiplayerState(prev => {
+          const newPlayers = new Map(prev.players);
+          const player = newPlayers.get(data.playerId);
+          if (player) {
+            newPlayers.set(data.playerId, {
+              ...player,
+              position: data.position,
+              rotation: data.rotation,
+              health: data.health,
+              level: data.level,
+              xp: data.xp,
+              upgrades: data.upgrades
+            });
+          }
+          return { ...prev, players: newPlayers };
+        });
+        break;
+
+      case 'PLAYER_SHOOT':
+        // Create projectile from other player
+        const shootPlayer = multiplayerState.players.get(data.playerId);
+        if (shootPlayer && data.playerId !== multiplayerState.playerId) {
+          const proj = {
+            id: data.projectileId,
+            position: { ...data.position },
+            direction: data.direction,
+            speed: 40,
+            lifetime: 3,
+            damage: 10,
+            color: teams[shootPlayer.team]?.color || 0xff0000,
+            isPlayerProjectile: false,
+            ownerId: data.playerId
+          };
+          setProjectiles(prev => [...prev, proj]);
+        }
+        break;
+
+      case 'PLAYER_DAMAGE':
+        // Handle damage to other players
+        console.log(`Player ${data.playerId} took ${data.damage} damage`);
+        break;
+
+      case 'PLAYER_DEATH':
+        console.log(`Player ${data.playerId} died`);
+        break;
+
+      case 'PLAYER_LEVEL_UP':
+        console.log(`Player ${data.playerId} leveled up to ${data.level}`);
+        break;
+
+      case 'ERROR':
+        setMultiplayerState(prev => ({ ...prev, error: data.message }));
+        console.error('Server error:', data.message);
+        break;
+
+      default:
+        console.log('Unknown server message type:', type);
+    }
+  };
+
+  const sendToServer = (message) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
+    }
+  };
+
+  const createRoom = () => {
+    sendToServer({
+      type: 'CREATE_ROOM',
+      playerName: playerName,
+      team: selectedTeam
+    });
+  };
+
+  const joinRoom = (code) => {
+    sendToServer({
+      type: 'JOIN_ROOM',
+      roomCode: code.toUpperCase(),
+      playerName: playerName,
+      team: selectedTeam
+    });
+  };
+
+  const leaveRoom = () => {
+    sendToServer({ type: 'LEAVE_ROOM' });
+    setMultiplayerState(prev => ({
+      ...prev,
+      roomCode: '',
+      playerId: null,
+      players: new Map()
+    }));
+    setGameState('lobby');
+  };
+
   // XP levels and requirements
   const getLevelRequirement = (level) => level * 100 + Math.pow(level, 2) * 50;
   
@@ -427,6 +627,20 @@ const SpaceCombatGame = () => {
         lastShotTime.current = currentTime;
       }
 
+      // Send player updates to server (throttled to ~20 updates per second)
+      if (multiplayerState.roomCode && currentTime - (lastUpdateTime.current || 0) > 50) {
+        sendToServer({
+          type: 'PLAYER_UPDATE',
+          position: { x: newX, y: 0, z: newZ },
+          rotation: newRotation,
+          health: player.health,
+          level: player.level,
+          xp: player.xp,
+          upgrades: player.upgrades
+        });
+        lastUpdateTime.current = currentTime;
+      }
+
       // Apply health decay if admin mode not enabled
       if (!adminConsole.noHealthDecay && player.health > 0) {
         setPlayer(prev => ({
@@ -535,7 +749,7 @@ const SpaceCombatGame = () => {
     // Clear old objects
     const objectsToRemove = [];
     sceneRef.current.children.forEach(child => {
-      if (child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle) {
+      if (child.userData.isRock || child.userData.isEnemy || child.userData.isProjectile || child.userData.isParticle || child.userData.isMultiplayerPlayer) {
         objectsToRemove.push(child);
       }
     });
@@ -619,6 +833,91 @@ const SpaceCombatGame = () => {
       group.userData.id = enemy.id;
       sceneRef.current.add(group);
     });
+
+    // Render multiplayer players
+    multiplayerState.players.forEach((otherPlayer, playerId) => {
+      if (playerId === multiplayerState.playerId) return; // Don't render self
+
+      const group = new THREE.Group();
+
+      // Body
+      const bodyGeometry = new THREE.BoxGeometry(0.6, 1, 0.4);
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: teams[otherPlayer.team]?.color || 0xffffff,
+        roughness: 0.7,
+        emissive: teams[otherPlayer.team]?.color || 0xffffff,
+        emissiveIntensity: 0.2
+      });
+      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      body.position.y = 0.5;
+      body.castShadow = true;
+      group.add(body);
+
+      // Head
+      const headGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+      const headMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffdbac,
+        roughness: 0.8
+      });
+      const head = new THREE.Mesh(headGeometry, headMaterial);
+      head.position.y = 1.3;
+      head.castShadow = true;
+      group.add(head);
+
+      // Arms
+      const armGeometry = new THREE.BoxGeometry(0.2, 0.7, 0.2);
+      const leftArm = new THREE.Mesh(armGeometry, bodyMaterial);
+      leftArm.position.set(-0.5, 0.6, 0);
+      leftArm.castShadow = true;
+      group.add(leftArm);
+
+      const rightArm = new THREE.Mesh(armGeometry, bodyMaterial);
+      rightArm.position.set(0.5, 0.6, 0);
+      rightArm.castShadow = true;
+      group.add(rightArm);
+
+      // Legs
+      const legGeometry = new THREE.BoxGeometry(0.25, 0.7, 0.25);
+      const legMaterial = new THREE.MeshStandardMaterial({
+        color: 0x2a2a2a,
+        roughness: 0.8
+      });
+
+      const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+      leftLeg.position.set(-0.2, -0.35, 0);
+      leftLeg.castShadow = true;
+      group.add(leftLeg);
+
+      const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+      rightLeg.position.set(0.2, -0.35, 0);
+      rightLeg.castShadow = true;
+      group.add(rightLeg);
+
+      // Player name label (as sprite above head)
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = 256;
+      canvas.height = 64;
+      context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      context.fillRect(0, 0, 256, 64);
+      context.font = 'Bold 24px Arial';
+      context.fillStyle = '#ffffff';
+      context.textAlign = 'center';
+      context.fillText(otherPlayer.name || 'Player', 128, 40);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.y = 2.5;
+      sprite.scale.set(2, 0.5, 1);
+      group.add(sprite);
+
+      group.position.set(otherPlayer.position.x, 0, otherPlayer.position.z);
+      group.rotation.y = otherPlayer.rotation;
+      group.userData.isMultiplayerPlayer = true;
+      group.userData.id = playerId;
+      sceneRef.current.add(group);
+    });
     
     // Render projectiles
     projectiles.forEach(proj => {
@@ -664,19 +963,50 @@ const SpaceCombatGame = () => {
       let angleOffset = 0;
       if (dir === 'side') {
         [-Math.PI / 2, Math.PI / 2].forEach(offset => {
-          newProjectiles.push(createProjectile(x, z, baseDirection + offset, true));
+          const proj = createProjectile(x, z, baseDirection + offset, true);
+          newProjectiles.push(proj);
+          // Send to server
+          if (multiplayerState.roomCode) {
+            sendToServer({
+              type: 'PLAYER_SHOOT',
+              position: { x, y: 1, z },
+              direction: baseDirection + offset,
+              projectileId: proj.id
+            });
+          }
         });
         return;
       }
       if (dir === 'back') angleOffset = Math.PI;
       if (dir === 'diagonal') {
         [-Math.PI / 4, Math.PI / 4, -3 * Math.PI / 4, 3 * Math.PI / 4].forEach(offset => {
-          newProjectiles.push(createProjectile(x, z, baseDirection + offset, true));
+          const proj = createProjectile(x, z, baseDirection + offset, true);
+          newProjectiles.push(proj);
+          // Send to server
+          if (multiplayerState.roomCode) {
+            sendToServer({
+              type: 'PLAYER_SHOOT',
+              position: { x, y: 1, z },
+              direction: baseDirection + offset,
+              projectileId: proj.id
+            });
+          }
         });
         return;
       }
 
-      newProjectiles.push(createProjectile(x, z, baseDirection + angleOffset, true));
+      const proj = createProjectile(x, z, baseDirection + angleOffset, true);
+      newProjectiles.push(proj);
+
+      // Send to server
+      if (multiplayerState.roomCode) {
+        sendToServer({
+          type: 'PLAYER_SHOOT',
+          position: { x, y: 1, z },
+          direction: baseDirection + angleOffset,
+          projectileId: proj.id
+        });
+      }
     });
 
     setProjectiles(prev => [...prev, ...newProjectiles]);
@@ -996,8 +1326,242 @@ const SpaceCombatGame = () => {
     }
   }, [player.health, gameState]);
   
-  // Menu Screen
+  // Lobby Screen (Multiplayer Room Selection)
+  if (gameState === 'lobby') {
+    return (
+      <div style={{
+        width: '100vw',
+        height: '100vh',
+        background: 'linear-gradient(135deg, #0a0a1a 0%, #1a0a2e 50%, #2a0a3e 100%)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: '"Orbitron", sans-serif',
+        color: '#fff',
+        position: 'relative',
+        overflow: 'hidden'
+      }}>
+        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
+
+        <style>{`
+          @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.2); opacity: 0.8; }
+          }
+          @keyframes glow {
+            0%, 100% { text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 30px #00ffff; }
+            50% { text-shadow: 0 0 20px #00ffff, 0 0 30px #00ffff, 0 0 40px #00ffff, 0 0 50px #00ffff; }
+          }
+        `}</style>
+
+        <div style={{ textAlign: 'center', zIndex: 1 }}>
+          <h1 style={{
+            fontSize: '72px',
+            fontWeight: 900,
+            margin: '0 0 20px 0',
+            animation: 'glow 2s ease-in-out infinite',
+            letterSpacing: '8px',
+            textTransform: 'uppercase'
+          }}>
+            NEXUS ARENA
+          </h1>
+
+          <p style={{
+            fontSize: '20px',
+            marginBottom: '50px',
+            opacity: 0.8,
+            letterSpacing: '4px'
+          }}>
+            MULTIPLAYER COMBAT PLATFORM
+          </p>
+
+          {/* Connection Status */}
+          <div style={{
+            marginBottom: '30px',
+            padding: '10px 20px',
+            background: multiplayerState.isConnected ? 'rgba(0, 255, 0, 0.2)' : 'rgba(255, 0, 0, 0.2)',
+            border: `2px solid ${multiplayerState.isConnected ? '#00ff00' : '#ff0000'}`,
+            borderRadius: '10px',
+            display: 'inline-block'
+          }}>
+            <div style={{ fontSize: '14px' }}>
+              {multiplayerState.isConnected ? '● CONNECTED TO SERVER' : '● CONNECTING...'}
+            </div>
+          </div>
+
+          {multiplayerState.error && (
+            <div style={{
+              marginBottom: '20px',
+              padding: '15px',
+              background: 'rgba(255, 0, 0, 0.2)',
+              border: '2px solid #ff0000',
+              borderRadius: '10px',
+              color: '#ff0000'
+            }}>
+              {multiplayerState.error}
+            </div>
+          )}
+
+          <div style={{
+            background: 'rgba(0, 0, 0, 0.6)',
+            padding: '40px',
+            borderRadius: '20px',
+            border: '2px solid rgba(0, 255, 255, 0.3)',
+            backdropFilter: 'blur(10px)',
+            maxWidth: '500px',
+            boxShadow: '0 0 40px rgba(0, 255, 255, 0.2)'
+          }}>
+            <input
+              type="text"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              placeholder="ENTER YOUR NAME"
+              maxLength={15}
+              style={{
+                width: '100%',
+                padding: '15px',
+                fontSize: '18px',
+                fontFamily: '"Orbitron", sans-serif',
+                background: 'rgba(0, 0, 0, 0.5)',
+                border: '2px solid rgba(0, 255, 255, 0.5)',
+                borderRadius: '10px',
+                color: '#00ffff',
+                marginBottom: '30px',
+                textAlign: 'center',
+                textTransform: 'uppercase',
+                letterSpacing: '2px',
+                outline: 'none'
+              }}
+            />
+
+            <div style={{ marginBottom: '30px' }}>
+              <h3 style={{ fontSize: '20px', marginBottom: '15px', letterSpacing: '3px' }}>
+                SELECT TEAM
+              </h3>
+
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                {Object.entries(teams).map(([key, team]) => (
+                  <button
+                    key={key}
+                    onClick={() => setSelectedTeam(key)}
+                    style={{
+                      padding: '15px 20px',
+                      fontSize: '14px',
+                      fontFamily: '"Orbitron", sans-serif',
+                      fontWeight: 700,
+                      background: selectedTeam === key
+                        ? `linear-gradient(135deg, ${team.glowColor}, ${team.glowColor}88)`
+                        : 'rgba(0, 0, 0, 0.5)',
+                      border: `3px solid ${selectedTeam === key ? team.glowColor : 'rgba(255, 255, 255, 0.2)'}`,
+                      borderRadius: '10px',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1px',
+                      boxShadow: selectedTeam === key ? `0 0 20px ${team.glowColor}` : 'none',
+                      transform: selectedTeam === key ? 'scale(1.05)' : 'scale(1)'
+                    }}
+                  >
+                    {team.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '15px', marginBottom: '20px' }}>
+              <button
+                onClick={createRoom}
+                disabled={!playerName || !selectedTeam || !multiplayerState.isConnected}
+                style={{
+                  flex: 1,
+                  padding: '20px',
+                  fontSize: '18px',
+                  fontFamily: '"Orbitron", sans-serif',
+                  fontWeight: 900,
+                  background: playerName && selectedTeam && multiplayerState.isConnected
+                    ? 'linear-gradient(135deg, #00ff00, #00aa00)'
+                    : 'rgba(100, 100, 100, 0.5)',
+                  border: 'none',
+                  borderRadius: '10px',
+                  color: '#000',
+                  cursor: playerName && selectedTeam && multiplayerState.isConnected ? 'pointer' : 'not-allowed',
+                  textTransform: 'uppercase',
+                  letterSpacing: '2px',
+                  boxShadow: playerName && selectedTeam && multiplayerState.isConnected
+                    ? '0 0 20px rgba(0, 255, 0, 0.5)'
+                    : 'none'
+                }}
+              >
+                CREATE ROOM
+              </button>
+            </div>
+
+            <div style={{ fontSize: '16px', marginBottom: '15px', opacity: 0.8 }}>OR</div>
+
+            <input
+              type="text"
+              value={multiplayerState.joinCode}
+              onChange={(e) => setMultiplayerState(prev => ({ ...prev, joinCode: e.target.value.toUpperCase() }))}
+              placeholder="ENTER ROOM CODE"
+              maxLength={6}
+              style={{
+                width: '100%',
+                padding: '15px',
+                fontSize: '18px',
+                fontFamily: '"Orbitron", sans-serif',
+                background: 'rgba(0, 0, 0, 0.5)',
+                border: '2px solid rgba(255, 255, 0, 0.5)',
+                borderRadius: '10px',
+                color: '#ffff00',
+                marginBottom: '15px',
+                textAlign: 'center',
+                textTransform: 'uppercase',
+                letterSpacing: '3px',
+                outline: 'none'
+              }}
+            />
+
+            <button
+              onClick={() => joinRoom(multiplayerState.joinCode)}
+              disabled={!playerName || !selectedTeam || !multiplayerState.joinCode || !multiplayerState.isConnected}
+              style={{
+                width: '100%',
+                padding: '20px',
+                fontSize: '18px',
+                fontFamily: '"Orbitron", sans-serif',
+                fontWeight: 900,
+                background: playerName && selectedTeam && multiplayerState.joinCode && multiplayerState.isConnected
+                  ? 'linear-gradient(135deg, #ffff00, #ffaa00)'
+                  : 'rgba(100, 100, 100, 0.5)',
+                border: 'none',
+                borderRadius: '10px',
+                color: '#000',
+                cursor: playerName && selectedTeam && multiplayerState.joinCode && multiplayerState.isConnected ? 'pointer' : 'not-allowed',
+                textTransform: 'uppercase',
+                letterSpacing: '2px',
+                boxShadow: playerName && selectedTeam && multiplayerState.joinCode && multiplayerState.isConnected
+                  ? '0 0 20px rgba(255, 255, 0, 0.5)'
+                  : 'none'
+              }}
+            >
+              JOIN ROOM
+            </button>
+          </div>
+
+          <div style={{ marginTop: '40px', opacity: 0.6, fontSize: '14px', letterSpacing: '2px' }}>
+            <p>Create a room or join with a code to play with friends!</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Menu Screen (Waiting Room)
   if (gameState === 'menu') {
+    const playerCount = multiplayerState.players.size + 1; // +1 for self
+
     return (
       <div style={{
         width: '100vw',
@@ -1044,138 +1608,154 @@ const SpaceCombatGame = () => {
           animation: 'float 3s ease-in-out infinite'
         }}>
           <h1 style={{
-            fontSize: '72px',
+            fontSize: '60px',
             fontWeight: 900,
             margin: '0 0 20px 0',
             animation: 'glow 2s ease-in-out infinite',
             letterSpacing: '8px',
             textTransform: 'uppercase'
           }}>
-            NEXUS ARENA
+            WAITING ROOM
           </h1>
-          
-          <p style={{
-            fontSize: '20px',
-            marginBottom: '50px',
-            opacity: 0.8,
-            letterSpacing: '4px'
+
+          {/* Room Code Display */}
+          <div style={{
+            fontSize: '32px',
+            marginBottom: '30px',
+            padding: '20px 40px',
+            background: 'rgba(0, 255, 255, 0.2)',
+            border: '3px solid #00ffff',
+            borderRadius: '15px',
+            display: 'inline-block',
+            boxShadow: '0 0 30px rgba(0, 255, 255, 0.5)'
           }}>
-            SPACE COMBAT PLATFORM
+            ROOM CODE: <span style={{ color: '#00ffff', fontWeight: 900, letterSpacing: '8px' }}>
+              {multiplayerState.roomCode}
+            </span>
+          </div>
+
+          <p style={{
+            fontSize: '16px',
+            marginBottom: '30px',
+            opacity: 0.8,
+            letterSpacing: '2px'
+          }}>
+            Share this code with your friends to join!
           </p>
-          
+
           <div style={{
             background: 'rgba(0, 0, 0, 0.6)',
-            padding: '40px',
+            padding: '30px',
             borderRadius: '20px',
             border: '2px solid rgba(0, 255, 255, 0.3)',
             backdropFilter: 'blur(10px)',
-            maxWidth: '500px',
-            boxShadow: '0 0 40px rgba(0, 255, 255, 0.2)'
+            maxWidth: '600px',
+            boxShadow: '0 0 40px rgba(0, 255, 255, 0.2)',
+            marginBottom: '30px'
           }}>
-            <input
-              type="text"
-              value={playerName}
-              onChange={(e) => setPlayerName(e.target.value)}
-              placeholder="ENTER CALLSIGN"
-              maxLength={15}
-              style={{
-                width: '100%',
-                padding: '15px',
-                fontSize: '18px',
-                fontFamily: '"Orbitron", sans-serif',
-                background: 'rgba(0, 0, 0, 0.5)',
-                border: '2px solid rgba(0, 255, 255, 0.5)',
-                borderRadius: '10px',
-                color: '#00ffff',
-                marginBottom: '30px',
-                textAlign: 'center',
-                textTransform: 'uppercase',
-                letterSpacing: '2px',
-                outline: 'none'
-              }}
-            />
-            
-            <div style={{ marginBottom: '30px' }}>
-              <h3 style={{
-                fontSize: '24px',
-                marginBottom: '20px',
-                letterSpacing: '3px'
-              }}>
-                SELECT FACTION
-              </h3>
-              
+            <h3 style={{
+              fontSize: '24px',
+              marginBottom: '20px',
+              letterSpacing: '3px',
+              color: '#00ffff'
+            }}>
+              PLAYERS ({playerCount}/4)
+            </h3>
+
+            <div style={{ marginBottom: '20px' }}>
+              {/* Your player */}
               <div style={{
+                padding: '15px',
+                marginBottom: '10px',
+                background: `linear-gradient(135deg, ${teams[selectedTeam]?.glowColor || '#00ffff'}33, ${teams[selectedTeam]?.glowColor || '#00ffff'}11)`,
+                border: `2px solid ${teams[selectedTeam]?.glowColor || '#00ffff'}`,
+                borderRadius: '10px',
                 display: 'flex',
-                gap: '15px',
-                justifyContent: 'center',
-                flexWrap: 'wrap'
+                justifyContent: 'space-between',
+                alignItems: 'center'
               }}>
-                {Object.entries(teams).map(([key, team]) => (
-                  <button
-                    key={key}
-                    onClick={() => setSelectedTeam(key)}
-                    style={{
-                      padding: '20px 30px',
-                      fontSize: '16px',
-                      fontFamily: '"Orbitron", sans-serif',
-                      fontWeight: 700,
-                      background: selectedTeam === key
-                        ? `linear-gradient(135deg, ${team.glowColor}, ${team.glowColor}88)`
-                        : 'rgba(0, 0, 0, 0.5)',
-                      border: `3px solid ${selectedTeam === key ? team.glowColor : 'rgba(255, 255, 255, 0.2)'}`,
-                      borderRadius: '10px',
-                      color: '#fff',
-                      cursor: 'pointer',
-                      transition: 'all 0.3s',
-                      textTransform: 'uppercase',
-                      letterSpacing: '2px',
-                      boxShadow: selectedTeam === key
-                        ? `0 0 20px ${team.glowColor}`
-                        : 'none',
-                      transform: selectedTeam === key ? 'scale(1.05)' : 'scale(1)'
-                    }}
-                  >
-                    {team.name}
-                  </button>
-                ))}
+                <div style={{ fontSize: '18px', fontWeight: 700 }}>
+                  {playerName} <span style={{ fontSize: '12px', opacity: 0.7 }}>(YOU)</span>
+                </div>
+                <div style={{ fontSize: '14px', color: teams[selectedTeam]?.glowColor }}>
+                  {teams[selectedTeam]?.name}
+                </div>
               </div>
+
+              {/* Other players */}
+              {Array.from(multiplayerState.players.values()).map((p) => (
+                <div key={p.id} style={{
+                  padding: '15px',
+                  marginBottom: '10px',
+                  background: `linear-gradient(135deg, ${teams[p.team]?.glowColor || '#ffffff'}33, ${teams[p.team]?.glowColor || '#ffffff'}11)`,
+                  border: `2px solid ${teams[p.team]?.glowColor || '#ffffff'}`,
+                  borderRadius: '10px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <div style={{ fontSize: '18px', fontWeight: 700 }}>
+                    {p.name}
+                  </div>
+                  <div style={{ fontSize: '14px', color: teams[p.team]?.glowColor }}>
+                    {teams[p.team]?.name}
+                  </div>
+                </div>
+              ))}
             </div>
-            
+
             <button
               onClick={startGame}
-              disabled={!playerName || !selectedTeam}
               style={{
                 width: '100%',
                 padding: '20px',
                 fontSize: '24px',
                 fontFamily: '"Orbitron", sans-serif',
                 fontWeight: 900,
-                background: playerName && selectedTeam
-                  ? 'linear-gradient(135deg, #00ffff, #00aaff)'
-                  : 'rgba(100, 100, 100, 0.5)',
+                background: 'linear-gradient(135deg, #00ff00, #00aa00)',
                 border: 'none',
                 borderRadius: '10px',
                 color: '#000',
-                cursor: playerName && selectedTeam ? 'pointer' : 'not-allowed',
+                cursor: 'pointer',
                 textTransform: 'uppercase',
                 letterSpacing: '4px',
-                boxShadow: playerName && selectedTeam
-                  ? '0 0 30px rgba(0, 255, 255, 0.5)'
-                  : 'none',
+                boxShadow: '0 0 30px rgba(0, 255, 0, 0.5)',
+                transition: 'all 0.3s',
+                marginBottom: '10px'
+              }}
+            >
+              START GAME
+            </button>
+
+            <button
+              onClick={leaveRoom}
+              style={{
+                width: '100%',
+                padding: '15px',
+                fontSize: '16px',
+                fontFamily: '"Orbitron", sans-serif',
+                fontWeight: 700,
+                background: 'rgba(255, 0, 0, 0.2)',
+                border: '2px solid #ff0044',
+                borderRadius: '10px',
+                color: '#ff0044',
+                cursor: 'pointer',
+                textTransform: 'uppercase',
+                letterSpacing: '2px',
                 transition: 'all 0.3s'
               }}
             >
-              {playerName && selectedTeam ? 'DEPLOY' : 'SELECT OPTIONS'}
+              LEAVE ROOM
             </button>
           </div>
-          
+
           <div style={{
-            marginTop: '40px',
+            marginTop: '20px',
             opacity: 0.6,
             fontSize: '14px',
             letterSpacing: '2px'
           }}>
-            <p>CONTROLS: WASD - MOVE | ARROWS - ROTATE | SPACE - FIRE</p>
+            <p>CONTROLS: WASD - MOVE | MOUSE - AIM | SPACE - FIRE | P - ADMIN</p>
           </div>
         </div>
       </div>
@@ -1350,6 +1930,20 @@ const SpaceCombatGame = () => {
                 r="3"
                 fill={teams[enemy.team].glowColor}
                 opacity="0.8"
+              />
+            ))}
+
+            {/* Multiplayer Players */}
+            {Array.from(multiplayerState.players.values()).map(otherPlayer => (
+              <circle
+                key={otherPlayer.id}
+                cx={100 + (otherPlayer.position.x / 50) * 100}
+                cy={100 + (otherPlayer.position.z / 50) * 100}
+                r="4"
+                fill={teams[otherPlayer.team]?.glowColor || '#ffffff'}
+                stroke="#ffffff"
+                strokeWidth="1"
+                opacity="1"
               />
             ))}
             
