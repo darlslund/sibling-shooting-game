@@ -259,7 +259,7 @@ const SpaceCombatGame = () => {
             damage: 10,
             color: teams[shootPlayer.team]?.color || 0xff0000,
             isPlayerProjectile: false,
-            ownerId: data.playerId
+            ownerTeam: shootPlayer.team
           };
           setProjectiles(prev => [...prev, proj]);
         }
@@ -309,6 +309,18 @@ const SpaceCombatGame = () => {
       playerName: playerName,
       team: selectedTeam
     });
+  };
+
+  const startLocalPlay = () => {
+    if (!playerName || !selectedTeam) return;
+    // Set up local play without WebSocket connection
+    setMultiplayerState(prev => ({
+      ...prev,
+      roomCode: 'OFFLINE',
+      playerId: 'local-player',
+      isConnected: false
+    }));
+    setGameState('menu');
   };
 
   const leaveRoom = () => {
@@ -1269,7 +1281,7 @@ const SpaceCombatGame = () => {
         const dz = proj.position.z - rock.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 2.5 && proj.isPlayerProjectile) {
+        if (dist < 2.75 && proj.isPlayerProjectile) {
           const newHealth = rock.health - proj.damage;
           collisionData.rocksToUpdate.push({
             id: rock.id,
@@ -1295,7 +1307,7 @@ const SpaceCombatGame = () => {
           const dz = proj.position.z - enemy.position.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
 
-          if (dist < 3) {
+          if (dist < 3.3) {
             const newHealth = enemy.health - proj.damage;
             collisionData.enemiesToUpdate.push({
               id: enemy.id,
@@ -1318,7 +1330,7 @@ const SpaceCombatGame = () => {
         const dz = proj.position.z - player.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 3) {
+        if (dist < 3.3) {
           collisionData.playerDamage += proj.damage;
           collisionData.particlesToCreate.push({ x: player.position.x, z: player.position.z, color: teams[selectedTeam].color });
           collisionData.projectilesToRemove.add(proj.id);
@@ -1745,6 +1757,33 @@ const SpaceCombatGame = () => {
               </button>
             </div>
 
+            <button
+              onClick={startLocalPlay}
+              disabled={!playerName || !selectedTeam}
+              style={{
+                width: '100%',
+                padding: '20px',
+                fontSize: '18px',
+                fontFamily: '"Orbitron", sans-serif',
+                fontWeight: 900,
+                background: playerName && selectedTeam
+                  ? 'linear-gradient(135deg, #00aaff, #0066aa)'
+                  : 'rgba(100, 100, 100, 0.5)',
+                border: 'none',
+                borderRadius: '10px',
+                color: '#fff',
+                cursor: playerName && selectedTeam ? 'pointer' : 'not-allowed',
+                textTransform: 'uppercase',
+                letterSpacing: '2px',
+                marginBottom: '20px',
+                boxShadow: playerName && selectedTeam
+                  ? '0 0 20px rgba(0, 170, 255, 0.5)'
+                  : 'none'
+              }}
+            >
+              PLAY OFFLINE
+            </button>
+
             <div style={{ fontSize: '16px', marginBottom: '15px', opacity: 0.8 }}>OR</div>
 
             <input
@@ -1870,25 +1909,41 @@ const SpaceCombatGame = () => {
             fontSize: '32px',
             marginBottom: '30px',
             padding: '20px 40px',
-            background: 'rgba(0, 255, 255, 0.2)',
-            border: '3px solid #00ffff',
+            background: multiplayerState.roomCode === 'OFFLINE'
+              ? 'rgba(0, 170, 255, 0.2)'
+              : 'rgba(0, 255, 255, 0.2)',
+            border: multiplayerState.roomCode === 'OFFLINE'
+              ? '3px solid #00aaff'
+              : '3px solid #00ffff',
             borderRadius: '15px',
             display: 'inline-block',
-            boxShadow: '0 0 30px rgba(0, 255, 255, 0.5)'
+            boxShadow: multiplayerState.roomCode === 'OFFLINE'
+              ? '0 0 30px rgba(0, 170, 255, 0.5)'
+              : '0 0 30px rgba(0, 255, 255, 0.5)'
           }}>
-            ROOM CODE: <span style={{ color: '#00ffff', fontWeight: 900, letterSpacing: '8px' }}>
-              {multiplayerState.roomCode}
-            </span>
+            {multiplayerState.roomCode === 'OFFLINE' ? (
+              <span style={{ color: '#00aaff', fontWeight: 900, letterSpacing: '8px' }}>
+                OFFLINE MODE
+              </span>
+            ) : (
+              <>
+                ROOM CODE: <span style={{ color: '#00ffff', fontWeight: 900, letterSpacing: '8px' }}>
+                  {multiplayerState.roomCode}
+                </span>
+              </>
+            )}
           </div>
 
-          <p style={{
-            fontSize: '16px',
-            marginBottom: '30px',
-            opacity: 0.8,
-            letterSpacing: '2px'
-          }}>
-            Share this code with your friends to join!
-          </p>
+          {multiplayerState.roomCode !== 'OFFLINE' && (
+            <p style={{
+              fontSize: '16px',
+              marginBottom: '30px',
+              opacity: 0.8,
+              letterSpacing: '2px'
+            }}>
+              Share this code with your friends to join!
+            </p>
+          )}
 
           <div style={{
             background: 'rgba(0, 0, 0, 0.6)',
