@@ -16,6 +16,8 @@ const SpaceCombatGame = () => {
     xp: 0,
     level: 1,
     team: null,
+    isDead: false,
+    deathTime: 0,
     upgrades: {
       damage: 1,
       fireRate: 1,
@@ -23,6 +25,16 @@ const SpaceCombatGame = () => {
       directions: ['front']
     }
   });
+
+  // Admin state
+  const [adminConsole, setAdminConsole] = useState({
+    isOpen: false,
+    noHealthDecay: false,
+    command: ''
+  });
+
+  // Mouse position
+  const mousePosition = useRef({ x: 0, y: 0, worldX: 0, worldZ: 0 });
   
   const [enemies, setEnemies] = useState([]);
   const [rocks, setRocks] = useState([]);
@@ -66,8 +78,8 @@ const SpaceCombatGame = () => {
     
     // Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a1a);
-    scene.fog = new THREE.Fog(0x0a0a1a, 50, 150);
+    scene.background = new THREE.Color(0x87CEEB); // Sky blue
+    scene.fog = new THREE.Fog(0x87CEEB, 50, 150);
     sceneRef.current = scene;
     
     // Camera setup (bird's eye view)
@@ -97,22 +109,44 @@ const SpaceCombatGame = () => {
     directionalLight.shadow.camera.bottom = -50;
     scene.add(directionalLight);
     
-    // Create arena floor
-    const floorGeometry = new THREE.PlaneGeometry(100, 100, 20, 20);
+    // Create grass floor with texture
+    const floorGeometry = new THREE.PlaneGeometry(100, 100, 50, 50);
+
+    // Create procedural grass texture
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+
+    // Base grass color
+    ctx.fillStyle = '#2d5016';
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Add grass texture variation
+    for (let i = 0; i < 10000; i++) {
+      const x = Math.random() * 512;
+      const y = Math.random() * 512;
+      const shade = Math.random() * 40 - 20;
+      const green = 80 + shade;
+      const red = 45 + shade / 2;
+      ctx.fillStyle = `rgb(${red}, ${green}, 16)`;
+      ctx.fillRect(x, y, Math.random() * 3 + 1, Math.random() * 3 + 1);
+    }
+
+    const grassTexture = new THREE.CanvasTexture(canvas);
+    grassTexture.wrapS = THREE.RepeatWrapping;
+    grassTexture.wrapT = THREE.RepeatWrapping;
+    grassTexture.repeat.set(8, 8);
+
     const floorMaterial = new THREE.MeshStandardMaterial({
-      color: 0x1a1a2e,
-      roughness: 0.8,
-      metalness: 0.2
+      map: grassTexture,
+      roughness: 0.9,
+      metalness: 0.0
     });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     scene.add(floor);
-    
-    // Add grid lines
-    const gridHelper = new THREE.GridHelper(100, 40, 0x00ffff, 0x004466);
-    gridHelper.position.y = 0.01;
-    scene.add(gridHelper);
     
     // Arena walls
     const wallMaterial = new THREE.MeshStandardMaterial({
@@ -138,53 +172,84 @@ const SpaceCombatGame = () => {
       scene.add(mesh);
     });
     
-    // Create player ship
-    const createPlayerShip = (color) => {
+    // Create human player character
+    const createHumanCharacter = (color) => {
       const group = new THREE.Group();
-      
-      // Main body
-      const bodyGeometry = new THREE.ConeGeometry(1, 3, 3);
+
+      // Body
+      const bodyGeometry = new THREE.BoxGeometry(0.6, 1, 0.4);
       const bodyMaterial = new THREE.MeshStandardMaterial({
         color: color,
-        emissive: color,
-        emissiveIntensity: 0.5,
-        metalness: 0.8,
-        roughness: 0.2
+        roughness: 0.7,
+        metalness: 0.3
       });
       const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      body.rotation.x = Math.PI / 2;
+      body.position.y = 0.5;
       body.castShadow = true;
       group.add(body);
-      
-      // Glow effect
-      const glowGeometry = new THREE.SphereGeometry(1.5, 16, 16);
-      const glowMaterial = new THREE.MeshBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: 0.3
+
+      // Head
+      const headGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+      const headMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffdbac,
+        roughness: 0.8
       });
-      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
-      group.add(glow);
-      
-      // Wings
-      const wingGeometry = new THREE.BoxGeometry(3, 0.2, 1);
-      const wingMaterial = new THREE.MeshStandardMaterial({
+      const head = new THREE.Mesh(headGeometry, headMaterial);
+      head.position.y = 1.3;
+      head.castShadow = true;
+      group.add(head);
+
+      // Arms
+      const armGeometry = new THREE.BoxGeometry(0.2, 0.7, 0.2);
+      const armMaterial = new THREE.MeshStandardMaterial({
         color: color,
-        emissive: color,
-        emissiveIntensity: 0.3
+        roughness: 0.7
       });
-      const wing = new THREE.Mesh(wingGeometry, wingMaterial);
-      wing.position.y = -0.5;
-      wing.castShadow = true;
-      group.add(wing);
-      
+
+      const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+      leftArm.position.set(-0.5, 0.6, 0);
+      leftArm.castShadow = true;
+      group.add(leftArm);
+
+      const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+      rightArm.position.set(0.5, 0.6, 0);
+      rightArm.castShadow = true;
+      group.add(rightArm);
+
+      // Legs
+      const legGeometry = new THREE.BoxGeometry(0.25, 0.7, 0.25);
+      const legMaterial = new THREE.MeshStandardMaterial({
+        color: 0x2a2a2a,
+        roughness: 0.8
+      });
+
+      const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+      leftLeg.position.set(-0.2, -0.35, 0);
+      leftLeg.castShadow = true;
+      group.add(leftLeg);
+
+      const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+      rightLeg.position.set(0.2, -0.35, 0);
+      rightLeg.castShadow = true;
+      group.add(rightLeg);
+
+      // Weapon indicator (points forward)
+      const weaponGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.5);
+      const weaponMaterial = new THREE.MeshStandardMaterial({
+        color: 0x444444,
+        metalness: 0.8
+      });
+      const weapon = new THREE.Mesh(weaponGeometry, weaponMaterial);
+      weapon.position.set(0, 0.8, 0.4);
+      group.add(weapon);
+
       return group;
     };
-    
-    const playerShip = createPlayerShip(teams[selectedTeam].color);
-    playerShip.position.set(player.position.x, 1, player.position.z);
-    scene.add(playerShip);
-    playerMeshRef.current = playerShip;
+
+    const playerCharacter = createHumanCharacter(teams[selectedTeam].color);
+    playerCharacter.position.set(player.position.x, 0, player.position.z);
+    scene.add(playerCharacter);
+    playerMeshRef.current = playerCharacter;
     
     // Generate initial rocks
     const initialRocks = [];
@@ -249,25 +314,55 @@ const SpaceCombatGame = () => {
     };
   }, [gameState, selectedTeam]);
   
-  // Keyboard controls
+  // Keyboard and mouse controls
   useEffect(() => {
     const handleKeyDown = (e) => {
       keysPressed.current[e.key.toLowerCase()] = true;
       if (e.key === 'Escape' && gameState === 'playing') {
         setGameState('paused');
       }
+      if (e.key.toLowerCase() === 'p' && gameState === 'playing') {
+        setAdminConsole(prev => ({ ...prev, isOpen: !prev.isOpen }));
+      }
     };
-    
+
     const handleKeyUp = (e) => {
       keysPressed.current[e.key.toLowerCase()] = false;
     };
-    
+
+    const handleMouseMove = (e) => {
+      // Store screen mouse position
+      mousePosition.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mousePosition.current.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+      // Calculate world position using raycaster
+      if (cameraRef.current) {
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(
+          new THREE.Vector2(mousePosition.current.x, mousePosition.current.y),
+          cameraRef.current
+        );
+
+        // Raycast to y=0 plane (ground)
+        const planeY = 0;
+        const distance = (planeY - cameraRef.current.position.y) / raycaster.ray.direction.y;
+        const point = raycaster.ray.origin.clone().add(
+          raycaster.ray.direction.clone().multiplyScalar(distance)
+        );
+
+        mousePosition.current.worldX = point.x;
+        mousePosition.current.worldZ = point.z;
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-    
+    window.addEventListener('mousemove', handleMouseMove);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('mousemove', handleMouseMove);
     };
   }, [gameState]);
   
@@ -283,28 +378,39 @@ const SpaceCombatGame = () => {
       
       // Player movement
       const moveSpeed = 15 * deltaTime;
-      const rotSpeed = 3 * deltaTime;
       let newX = player.position.x;
       let newZ = player.position.z;
-      let newRotation = player.rotation;
-      
+
       if (keysPressed.current['w']) newZ -= moveSpeed;
       if (keysPressed.current['s']) newZ += moveSpeed;
       if (keysPressed.current['a']) newX -= moveSpeed;
       if (keysPressed.current['d']) newX += moveSpeed;
-      
-      if (keysPressed.current['arrowleft']) newRotation += rotSpeed;
-      if (keysPressed.current['arrowright']) newRotation -= rotSpeed;
-      
+
       // Bounds checking
       newX = Math.max(-48, Math.min(48, newX));
       newZ = Math.max(-48, Math.min(48, newZ));
-      
-      // Update player position
-      if (playerMeshRef.current) {
+
+      // Rotate player to face mouse cursor
+      const dx = mousePosition.current.worldX - newX;
+      const dz = mousePosition.current.worldZ - newZ;
+      const newRotation = Math.atan2(dx, dz);
+
+      // Update player position and rotation
+      if (playerMeshRef.current && !player.isDead) {
         playerMeshRef.current.position.x = newX;
         playerMeshRef.current.position.z = newZ;
         playerMeshRef.current.rotation.y = newRotation;
+
+        // Death animation
+        if (player.health <= 0 && !player.isDead) {
+          setPlayer(prev => ({ ...prev, isDead: true, deathTime: currentTime }));
+        }
+
+        if (player.isDead) {
+          const deathProgress = (currentTime - player.deathTime) / 2000;
+          playerMeshRef.current.rotation.x = deathProgress * Math.PI / 2;
+          playerMeshRef.current.position.y = -deathProgress * 2;
+        }
       }
       
       // Camera follow
@@ -314,11 +420,19 @@ const SpaceCombatGame = () => {
         cameraRef.current.lookAt(newX, 0, newZ);
       }
       
-      // Shooting
+      // Shooting - now follows mouse direction
       const fireRateCooldown = 500 / player.upgrades.fireRate;
-      if (keysPressed.current[' '] && currentTime - lastShotTime.current > fireRateCooldown) {
-        shoot(newX, newZ, newRotation);
+      if (keysPressed.current[' '] && currentTime - lastShotTime.current > fireRateCooldown && !player.isDead) {
+        shootTowardsMouse(newX, newZ, mousePosition.current.worldX, mousePosition.current.worldZ);
         lastShotTime.current = currentTime;
+      }
+
+      // Apply health decay if admin mode not enabled
+      if (!adminConsole.noHealthDecay && player.health > 0) {
+        setPlayer(prev => ({
+          ...prev,
+          health: Math.max(0, prev.health - 0.5 * deltaTime)
+        }));
       }
       
       // Update enemies (AI)
@@ -444,22 +558,62 @@ const SpaceCombatGame = () => {
       sceneRef.current.add(mesh);
     });
     
-    // Render enemies
+    // Render enemies as human characters
     enemies.forEach(enemy => {
       const group = new THREE.Group();
-      
+
       // Body
-      const bodyGeometry = new THREE.ConeGeometry(1, 3, 3);
+      const bodyGeometry = new THREE.BoxGeometry(0.6, 1, 0.4);
       const bodyMaterial = new THREE.MeshStandardMaterial({
         color: teams[enemy.team].color,
-        emissive: teams[enemy.team].color,
-        emissiveIntensity: 0.5
+        roughness: 0.7
       });
       const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      body.rotation.x = Math.PI / 2;
+      body.position.y = 0.5;
+      body.castShadow = true;
       group.add(body);
-      
-      group.position.set(enemy.position.x, 1, enemy.position.z);
+
+      // Head
+      const headGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+      const headMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffdbac,
+        roughness: 0.8
+      });
+      const head = new THREE.Mesh(headGeometry, headMaterial);
+      head.position.y = 1.3;
+      head.castShadow = true;
+      group.add(head);
+
+      // Arms
+      const armGeometry = new THREE.BoxGeometry(0.2, 0.7, 0.2);
+      const leftArm = new THREE.Mesh(armGeometry, bodyMaterial);
+      leftArm.position.set(-0.5, 0.6, 0);
+      leftArm.castShadow = true;
+      group.add(leftArm);
+
+      const rightArm = new THREE.Mesh(armGeometry, bodyMaterial);
+      rightArm.position.set(0.5, 0.6, 0);
+      rightArm.castShadow = true;
+      group.add(rightArm);
+
+      // Legs
+      const legGeometry = new THREE.BoxGeometry(0.25, 0.7, 0.25);
+      const legMaterial = new THREE.MeshStandardMaterial({
+        color: 0x2a2a2a,
+        roughness: 0.8
+      });
+
+      const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+      leftLeg.position.set(-0.2, -0.35, 0);
+      leftLeg.castShadow = true;
+      group.add(leftLeg);
+
+      const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+      rightLeg.position.set(0.2, -0.35, 0);
+      rightLeg.castShadow = true;
+      group.add(rightLeg);
+
+      group.position.set(enemy.position.x, 0, enemy.position.z);
       group.rotation.y = enemy.rotation;
       group.userData.isEnemy = true;
       group.userData.id = enemy.id;
@@ -497,10 +651,41 @@ const SpaceCombatGame = () => {
     
   }, [rocks, enemies, projectiles, particles, gameState]);
   
+  const shootTowardsMouse = (x, z, mouseX, mouseZ) => {
+    // Calculate direction from player to mouse
+    const dx = mouseX - x;
+    const dz = mouseZ - z;
+    const baseDirection = Math.atan2(dz, dx);
+
+    const directions = ['front', ...player.upgrades.extraCannons];
+    const newProjectiles = [];
+
+    directions.forEach(dir => {
+      let angleOffset = 0;
+      if (dir === 'side') {
+        [-Math.PI / 2, Math.PI / 2].forEach(offset => {
+          newProjectiles.push(createProjectile(x, z, baseDirection + offset, true));
+        });
+        return;
+      }
+      if (dir === 'back') angleOffset = Math.PI;
+      if (dir === 'diagonal') {
+        [-Math.PI / 4, Math.PI / 4, -3 * Math.PI / 4, 3 * Math.PI / 4].forEach(offset => {
+          newProjectiles.push(createProjectile(x, z, baseDirection + offset, true));
+        });
+        return;
+      }
+
+      newProjectiles.push(createProjectile(x, z, baseDirection + angleOffset, true));
+    });
+
+    setProjectiles(prev => [...prev, ...newProjectiles]);
+  };
+
   const shoot = (x, z, rotation) => {
     const directions = ['front', ...player.upgrades.extraCannons];
     const newProjectiles = [];
-    
+
     directions.forEach(dir => {
       let angleOffset = 0;
       if (dir === 'side') {
@@ -516,10 +701,10 @@ const SpaceCombatGame = () => {
         });
         return;
       }
-      
+
       newProjectiles.push(createProjectile(x, z, rotation + angleOffset, true));
     });
-    
+
     setProjectiles(prev => [...prev, ...newProjectiles]);
   };
   
@@ -689,8 +874,118 @@ const SpaceCombatGame = () => {
     setPlayer(prev => ({
       ...prev,
       position: { x: 0, y: 0, z: 0 },
-      health: prev.maxHealth
+      health: prev.maxHealth,
+      isDead: false,
+      deathTime: 0
     }));
+  };
+
+  // Admin console command processing
+  const executeAdminCommand = (command) => {
+    const parts = command.trim().toLowerCase().split(' ');
+    const cmd = parts[0];
+
+    switch (cmd) {
+      case 'nohealthdecay':
+      case 'godmode':
+        setAdminConsole(prev => ({
+          ...prev,
+          noHealthDecay: !prev.noHealthDecay,
+          command: ''
+        }));
+        console.log(`Health decay ${!adminConsole.noHealthDecay ? 'disabled' : 'enabled'}`);
+        break;
+
+      case 'levelup':
+        const targetName = parts.slice(1).join(' ');
+        if (!targetName) {
+          // Level up the player
+          setPlayer(prev => ({
+            ...prev,
+            level: prev.level + 1,
+            xp: 0
+          }));
+          console.log('Player leveled up!');
+        } else {
+          // Level up specific enemy by name
+          setEnemies(prev => prev.map(enemy => {
+            if (enemy.name.toLowerCase() === targetName) {
+              return { ...enemy, level: enemy.level + 1 };
+            }
+            return enemy;
+          }));
+          console.log(`Leveled up ${targetName}`);
+        }
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      case 'addbot':
+        const botTeam = parts[1] || Object.keys(teams)[Math.floor(Math.random() * Object.keys(teams).length)];
+        const validTeam = teams[botTeam] ? botTeam : Object.keys(teams)[0];
+        setEnemies(prev => [...prev, {
+          id: Math.random(),
+          name: `Bot ${Math.floor(Math.random() * 1000)}`,
+          team: validTeam,
+          position: {
+            x: (Math.random() - 0.5) * 80,
+            y: 0,
+            z: (Math.random() - 0.5) * 80
+          },
+          rotation: Math.random() * Math.PI * 2,
+          health: 100,
+          maxHealth: 100,
+          level: 1,
+          aiState: {
+            targetX: 0,
+            targetZ: 0,
+            lastShot: 0,
+            behavior: Math.random() > 0.5 ? 'aggressive' : 'defensive'
+          }
+        }]);
+        console.log(`Added bot on team ${validTeam}`);
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      case 'removebot':
+        const botName = parts.slice(1).join(' ');
+        if (botName) {
+          setEnemies(prev => prev.filter(enemy =>
+            enemy.name.toLowerCase() !== botName.toLowerCase()
+          ));
+          console.log(`Removed bot ${botName}`);
+        } else {
+          setEnemies(prev => prev.slice(0, -1));
+          console.log('Removed last bot');
+        }
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      case 'heal':
+        setPlayer(prev => ({ ...prev, health: prev.maxHealth }));
+        console.log('Player healed');
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      case 'clear':
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      case 'help':
+        console.log('=== ADMIN COMMANDS ===');
+        console.log('nohealthdecay / godmode - Toggle health decay');
+        console.log('levelup [name] - Grant level up to player or bot');
+        console.log('addbot [team] - Add a bot (red/blue/green)');
+        console.log('removebot [name] - Remove bot by name or last bot');
+        console.log('heal - Restore player health');
+        console.log('clear - Clear command input');
+        console.log('help - Show this help');
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+        break;
+
+      default:
+        console.log(`Unknown command: ${cmd}. Type 'help' for commands.`);
+        setAdminConsole(prev => ({ ...prev, command: '' }));
+    }
   };
   
   useEffect(() => {
@@ -1176,6 +1471,79 @@ const SpaceCombatGame = () => {
           </div>
         )}
         
+        {/* Admin Console */}
+        {adminConsole.isOpen && (
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'rgba(0, 0, 0, 0.95)',
+            padding: '30px',
+            borderRadius: '15px',
+            border: '3px solid #ff00ff',
+            pointerEvents: 'auto',
+            boxShadow: '0 0 40px rgba(255, 0, 255, 0.5)',
+            minWidth: '500px',
+            maxWidth: '600px'
+          }}>
+            <div style={{ fontSize: '28px', fontWeight: 900, marginBottom: '15px', color: '#ff00ff' }}>
+              ADMIN CONSOLE
+            </div>
+
+            <div style={{ marginBottom: '15px', fontSize: '14px', opacity: 0.8 }}>
+              <div style={{ marginBottom: '10px' }}>
+                <strong>Available Commands:</strong>
+              </div>
+              <div style={{ fontFamily: 'monospace', fontSize: '12px', lineHeight: '1.6' }}>
+                <div>• <strong>nohealthdecay</strong> or <strong>godmode</strong> - Toggle health decay</div>
+                <div>• <strong>levelup [name]</strong> - Grant level up to player or bot</div>
+                <div>• <strong>addbot [team]</strong> - Add bot (red/blue/green)</div>
+                <div>• <strong>removebot [name]</strong> - Remove bot by name or last</div>
+                <div>• <strong>heal</strong> - Restore player health</div>
+                <div>• <strong>help</strong> - Show help in console</div>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '15px', fontSize: '12px' }}>
+              <div>Status: Health Decay <strong style={{ color: adminConsole.noHealthDecay ? '#00ff00' : '#ff0044' }}>
+                {adminConsole.noHealthDecay ? 'DISABLED' : 'ENABLED'}
+              </strong></div>
+            </div>
+
+            <input
+              type="text"
+              value={adminConsole.command}
+              onChange={(e) => setAdminConsole(prev => ({ ...prev, command: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && adminConsole.command.trim()) {
+                  executeAdminCommand(adminConsole.command);
+                }
+                if (e.key === 'Escape') {
+                  setAdminConsole(prev => ({ ...prev, isOpen: false }));
+                }
+              }}
+              placeholder="Enter command..."
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '14px',
+                fontFamily: 'monospace',
+                background: 'rgba(0, 0, 0, 0.7)',
+                border: '2px solid #ff00ff',
+                borderRadius: '8px',
+                color: '#00ff00',
+                outline: 'none'
+              }}
+            />
+
+            <div style={{ marginTop: '10px', fontSize: '11px', opacity: 0.6 }}>
+              Press ENTER to execute • ESC to close • P to toggle
+            </div>
+          </div>
+        )}
+
         {/* Controls reminder */}
         <div style={{
           position: 'absolute',
@@ -1189,8 +1557,9 @@ const SpaceCombatGame = () => {
           border: '1px solid rgba(255, 255, 255, 0.2)'
         }}>
           <div>WASD - Move</div>
-          <div>← → - Rotate</div>
+          <div>MOUSE - Aim</div>
           <div>SPACE - Fire</div>
+          <div>P - Admin Console</div>
         </div>
       </div>
     </div>
