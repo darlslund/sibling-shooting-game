@@ -1504,7 +1504,9 @@ const SpaceCombatGame = () => {
         const damage = collisionData.rockDamage.get(rock.id);
         if (damage) {
           const newHealth = rock.health - damage;
-          // Removed XP gain from destroying leaf piles
+          if (newHealth <= 0) {
+            collisionData.xpGain += 20;
+          }
           return {
             ...rock,
             health: newHealth,
@@ -1523,7 +1525,10 @@ const SpaceCombatGame = () => {
         if (damageData) {
           const newHealth = enemy.health - damageData.damage;
           if (newHealth <= 0) {
-            // Removed XP gain from killing enemies
+            // Give XP only to player
+            if (damageData.killerTeam === selectedTeam) {
+              collisionData.xpGain += 50 * enemy.level;
+            }
             // Track kill for team score
             if (damageData.killerTeam) {
               setTeamScores(prevScores => ({
