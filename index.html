@@ -372,16 +372,16 @@ const SpaceCombatGame = () => {
     
     // Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB); // Sky blue
-    scene.fog = new THREE.Fog(0x87CEEB, 45, 55); // Fog only at outer frame/edges
+    scene.background = new THREE.Color(0x0a0a1a); // Night sky
+    scene.fog = new THREE.Fog(0x0a0a1a, 35, 60); // Night fog
     sceneRef.current = scene;
-    
+
     // Camera setup (bird's eye view) - zoomed in closer
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 25, 15);
     camera.lookAt(0, 0, 0);
     cameraRef.current = camera;
-    
+
     // Renderer setup
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -389,12 +389,13 @@ const SpaceCombatGame = () => {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
-    
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+
+    // Lighting - nighttime (dimmer)
+    const ambientLight = new THREE.AmbientLight(0x202040, 0.3);
     scene.add(ambientLight);
-    
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+
+    // Moonlight (dim directional light)
+    const directionalLight = new THREE.DirectionalLight(0x8888ff, 0.4);
     directionalLight.position.set(20, 40, 20);
     directionalLight.castShadow = true;
     directionalLight.shadow.camera.left = -50;
@@ -464,6 +465,117 @@ const SpaceCombatGame = () => {
       mesh.position.set(...wall.pos);
       mesh.rotation.set(...wall.rot);
       scene.add(mesh);
+    });
+
+    // Add stone paths from spawn to center
+    const pathMaterial = new THREE.MeshStandardMaterial({
+      color: 0x666666,
+      roughness: 0.8,
+      metalness: 0.1
+    });
+
+    // Create paths from each spawn to center
+    Object.keys(spawnAreas).forEach(teamKey => {
+      const spawnArea = spawnAreas[teamKey];
+
+      // Calculate path direction
+      const pathLength = Math.sqrt(spawnArea.x * spawnArea.x + spawnArea.z * spawnArea.z);
+      const angle = Math.atan2(spawnArea.z, spawnArea.x);
+
+      // Create path segments
+      const segments = 10;
+      for (let i = 0; i < segments; i++) {
+        const t = i / segments;
+        const x = spawnArea.x * (1 - t);
+        const z = spawnArea.z * (1 - t);
+
+        // Stone segment
+        const stoneGeometry = new THREE.PlaneGeometry(3, pathLength / segments + 0.5);
+        const stone = new THREE.Mesh(stoneGeometry, pathMaterial);
+        stone.rotation.x = -Math.PI / 2;
+        stone.rotation.z = angle;
+        stone.position.set(x, 0.02, z);
+        stone.receiveShadow = true;
+        scene.add(stone);
+      }
+    });
+
+    // Center reward circle (high XP area)
+    const centerCircleGeometry = new THREE.CircleGeometry(8, 32);
+    const centerCircleMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffaa00,
+      transparent: true,
+      opacity: 0.3,
+      emissive: 0xffaa00,
+      emissiveIntensity: 0.5
+    });
+    const centerCircle = new THREE.Mesh(centerCircleGeometry, centerCircleMaterial);
+    centerCircle.rotation.x = -Math.PI / 2;
+    centerCircle.position.set(0, 0.03, 0);
+    centerCircle.receiveShadow = true;
+    scene.add(centerCircle);
+
+    // Add lightposts around the arena
+    const lightpostPositions = [
+      // Around the arena perimeter
+      [40, 0, 40], [-40, 0, 40], [40, 0, -40], [-40, 0, -40],
+      [40, 0, 0], [-40, 0, 0], [0, 0, 40], [0, 0, -40],
+      // Near spawn areas
+      [0, 0, 30], [-25, 0, -15], [25, 0, -15],
+      // Near center
+      [12, 0, 12], [-12, 0, 12], [12, 0, -12], [-12, 0, -12]
+    ];
+
+    lightpostPositions.forEach(pos => {
+      // Post
+      const postGeometry = new THREE.CylinderGeometry(0.3, 0.3, 8, 8);
+      const postMaterial = new THREE.MeshStandardMaterial({
+        color: 0x333333,
+        roughness: 0.7,
+        metalness: 0.5
+      });
+      const post = new THREE.Mesh(postGeometry, postMaterial);
+      post.position.set(pos[0], 4, pos[2]);
+      post.castShadow = true;
+      scene.add(post);
+
+      // Light
+      const lightGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+      const lightMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffeeaa,
+        emissive: 0xffeeaa,
+        emissiveIntensity: 1
+      });
+      const light = new THREE.Mesh(lightGeometry, lightMaterial);
+      light.position.set(pos[0], 8, pos[2]);
+      scene.add(light);
+
+      // Point light for illumination
+      const pointLight = new THREE.PointLight(0xffeeaa, 0.8, 20);
+      pointLight.position.set(pos[0], 8, pos[2]);
+      pointLight.castShadow = true;
+      scene.add(pointLight);
+    });
+
+    // Add filler objects (crates, barrels)
+    const fillerPositions = [
+      [20, 15], [-20, 15], [15, -20], [-15, -20],
+      [25, 0], [-25, 0], [0, 25], [0, -25],
+      [30, 20], [-30, 20], [30, -20], [-30, -20]
+    ];
+
+    fillerPositions.forEach(pos => {
+      // Crate
+      const crateGeometry = new THREE.BoxGeometry(2, 2, 2);
+      const crateMaterial = new THREE.MeshStandardMaterial({
+        color: 0x8B4513,
+        roughness: 0.9
+      });
+      const crate = new THREE.Mesh(crateGeometry, crateMaterial);
+      crate.position.set(pos[0], 1, pos[1]);
+      crate.castShadow = true;
+      crate.receiveShadow = true;
+      scene.add(crate);
     });
 
     // Add visual indicators for spawn safe zones
@@ -768,7 +880,7 @@ const SpaceCombatGame = () => {
         playerMeshRef.current.rotation.y = newRotation;
 
         // Invincibility visual effect (blink/pulse)
-        const timeSinceSpawn = currentTime - player.spawnTime;
+        const timeSinceSpawn = Date.now() - player.spawnTime;
         const isInvincible = timeSinceSpawn < 3000;
         if (isInvincible) {
           // Blink effect: alternate visibility every 150ms
@@ -780,11 +892,11 @@ const SpaceCombatGame = () => {
 
         // Death animation
         if (player.health <= 0 && !player.isDead) {
-          setPlayer(prev => ({ ...prev, isDead: true, deathTime: currentTime }));
+          setPlayer(prev => ({ ...prev, isDead: true, deathTime: Date.now() }));
         }
 
         if (player.isDead) {
-          const deathProgress = (currentTime - player.deathTime) / 2000;
+          const deathProgress = (Date.now() - player.deathTime) / 2000;
           playerMeshRef.current.rotation.x = deathProgress * Math.PI / 2;
           playerMeshRef.current.position.y = -deathProgress * 2;
         }
@@ -830,7 +942,7 @@ const SpaceCombatGame = () => {
       setEnemies(prevEnemies => prevEnemies.map(enemy => {
         // Check if bot should respawn (after 10 seconds)
         if (enemy.isDead) {
-          const timeSinceDeath = currentTime - enemy.deathTime;
+          const timeSinceDeath = Date.now() - enemy.deathTime;
           if (timeSinceDeath > 10000) { // 10 seconds
             // Respawn bot at team spawn area
             const spawnPos = getSpawnPosition(enemy.team);
@@ -843,22 +955,52 @@ const SpaceCombatGame = () => {
           return enemy; // Don't process AI for dead bots
         }
 
-        const dx = player.position.x - enemy.position.x;
-        const dz = player.position.z - enemy.position.z;
-        const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+        // Find nearest enemy (player or bot from different team)
+        let targetX = player.position.x;
+        let targetZ = player.position.z;
+        let minDist = Infinity;
+        let hasTarget = false;
 
-        // AI behavior - only attack players on different teams
-        if (enemy.aiState.behavior === 'aggressive' && distToPlayer < 30 && enemy.team !== selectedTeam) {
-          // Chase player
+        // Check player as potential target
+        const dxPlayer = player.position.x - enemy.position.x;
+        const dzPlayer = player.position.z - enemy.position.z;
+        const distToPlayer = Math.sqrt(dxPlayer * dxPlayer + dzPlayer * dzPlayer);
+        if (enemy.team !== selectedTeam && distToPlayer < 35) {
+          minDist = distToPlayer;
+          targetX = player.position.x;
+          targetZ = player.position.z;
+          hasTarget = true;
+        }
+
+        // Check other bots as potential targets
+        prevEnemies.forEach(otherEnemy => {
+          if (otherEnemy.id !== enemy.id && !otherEnemy.isDead && otherEnemy.team !== enemy.team) {
+            const dxBot = otherEnemy.position.x - enemy.position.x;
+            const dzBot = otherEnemy.position.z - enemy.position.z;
+            const distToBot = Math.sqrt(dxBot * dxBot + dzBot * dzBot);
+            if (distToBot < minDist && distToBot < 35) {
+              minDist = distToBot;
+              targetX = otherEnemy.position.x;
+              targetZ = otherEnemy.position.z;
+              hasTarget = true;
+            }
+          }
+        });
+
+        // AI behavior - attack nearest enemy from different team
+        if (enemy.aiState.behavior === 'aggressive' && hasTarget && minDist < 35) {
+          // Chase target
+          const dx = targetX - enemy.position.x;
+          const dz = targetZ - enemy.position.z;
           const angle = Math.atan2(dz, dx);
           enemy.position.x += Math.cos(angle) * 8 * deltaTime;
           enemy.position.z += Math.sin(angle) * 8 * deltaTime;
           enemy.rotation = angle - Math.PI / 2;
 
-          // Shoot at player
-          if (currentTime - enemy.aiState.lastShot > 1000) {
+          // Shoot at target
+          if (Date.now() - enemy.aiState.lastShot > 1000) {
             shootEnemy(enemy);
-            enemy.aiState.lastShot = currentTime;
+            enemy.aiState.lastShot = Date.now();
           }
         } else {
           // Random movement
@@ -888,7 +1030,7 @@ const SpaceCombatGame = () => {
       // Update leaf piles (respawn logic)
       setRocks(prevRocks => prevRocks.map(rock => {
         if (rock.isDestroyed) {
-          const timeSinceDestroyed = currentTime - rock.destroyedTime;
+          const timeSinceDestroyed = Date.now() - rock.destroyedTime;
           if (timeSinceDestroyed > rock.respawnTime) {
             // Respawn leaf pile
             rock.isDestroyed = false;
@@ -1521,7 +1663,12 @@ const SpaceCombatGame = () => {
   
   const gainXP = (amount) => {
     setPlayer(prev => {
-      const newXP = prev.xp + amount;
+      // Center XP bonus: 2x XP when in center circle (radius 8)
+      const distFromCenter = Math.sqrt(prev.position.x * prev.position.x + prev.position.z * prev.position.z);
+      const xpMultiplier = distFromCenter < 8 ? 2.0 : 1.0;
+      const adjustedAmount = Math.floor(amount * xpMultiplier);
+
+      const newXP = prev.xp + adjustedAmount;
       const requiredXP = getLevelRequirement(prev.level);
 
       if (newXP >= requiredXP) {
@@ -2417,73 +2564,6 @@ const SpaceCombatGame = () => {
           </div>
         </div>
         
-        {/* Minimap */}
-        <div style={{
-          position: 'absolute',
-          bottom: '20px',
-          right: '20px',
-          width: '200px',
-          height: '200px',
-          background: 'rgba(0, 0, 0, 0.9)',
-          border: '2px solid #00ffff',
-          borderRadius: '10px',
-          boxShadow: '0 0 20px rgba(0, 255, 255, 0.3)'
-        }}>
-          <svg width="200" height="200" style={{ display: 'block' }}>
-            {/* Grid */}
-            <line x1="100" y1="0" x2="100" y2="200" stroke="#ffffff22" strokeWidth="1" />
-            <line x1="0" y1="100" x2="200" y2="100" stroke="#ffffff22" strokeWidth="1" />
-            
-            {/* Player */}
-            <circle
-              cx={100 + (player.position.x / 50) * 100}
-              cy={100 + (player.position.z / 50) * 100}
-              r="5"
-              fill={teams[selectedTeam].glowColor}
-              stroke="#fff"
-              strokeWidth="2"
-            />
-            
-            {/* Enemies */}
-            {enemies.map(enemy => (
-              <circle
-                key={enemy.id}
-                cx={100 + (enemy.position.x / 50) * 100}
-                cy={100 + (enemy.position.z / 50) * 100}
-                r="3"
-                fill={teams[enemy.team].glowColor}
-                opacity="0.8"
-              />
-            ))}
-
-            {/* Multiplayer Players */}
-            {Array.from(multiplayerState.players.values()).map(otherPlayer => (
-              <circle
-                key={otherPlayer.id}
-                cx={100 + (otherPlayer.position.x / 50) * 100}
-                cy={100 + (otherPlayer.position.z / 50) * 100}
-                r="4"
-                fill={teams[otherPlayer.team]?.glowColor || '#ffffff'}
-                stroke="#ffffff"
-                strokeWidth="1"
-                opacity="1"
-              />
-            ))}
-            
-            {/* Rocks */}
-            {rocks.map(rock => (
-              <rect
-                key={rock.id}
-                x={100 + (rock.position.x / 50) * 100 - 2}
-                y={100 + (rock.position.z / 50) * 100 - 2}
-                width="4"
-                height="4"
-                fill="#666"
-                opacity="0.6"
-              />
-            ))}
-          </svg>
-        </div>
         
         {/* Enemy Count */}
         <div style={{
