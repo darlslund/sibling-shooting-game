@@ -62,6 +62,7 @@ const SpaceCombatGame = () => {
     team: null,
     isDead: false,
     deathTime: 0,
+    spawnTime: Date.now(), // Track spawn time for invincibility
     upgrades: {
       damage: 1,
       fireRate: 1,
@@ -139,6 +140,16 @@ const SpaceCombatGame = () => {
       x: spawn.x + Math.cos(angle) * distance,
       z: spawn.z + Math.sin(angle) * distance
     };
+  };
+
+  // Helper function to check if a position is in a team's spawn area (safe zone)
+  const isInSpawnArea = (position, team) => {
+    const spawn = spawnAreas[team];
+    if (!spawn) return false;
+    const dx = position.x - spawn.x;
+    const dz = position.z - spawn.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    return distance <= spawn.radius;
   };
   
   // WebSocket connection management
@@ -362,7 +373,7 @@ const SpaceCombatGame = () => {
     // Scene setup
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87CEEB); // Sky blue
-    scene.fog = new THREE.Fog(0x87CEEB, 15, 35); // Tighter fog so you can't see outside map
+    scene.fog = new THREE.Fog(0x87CEEB, 45, 55); // Fog only at outer frame/edges
     sceneRef.current = scene;
     
     // Camera setup (bird's eye view) - zoomed in closer
@@ -454,7 +465,39 @@ const SpaceCombatGame = () => {
       mesh.rotation.set(...wall.rot);
       scene.add(mesh);
     });
-    
+
+    // Add visual indicators for spawn safe zones
+    Object.keys(spawnAreas).forEach(teamKey => {
+      const spawnArea = spawnAreas[teamKey];
+      const teamColor = teams[teamKey].color;
+
+      // Create a circle on the ground to mark the safe zone
+      const circleGeometry = new THREE.RingGeometry(spawnArea.radius - 0.5, spawnArea.radius, 32);
+      const circleMaterial = new THREE.MeshBasicMaterial({
+        color: teamColor,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide
+      });
+      const circle = new THREE.Mesh(circleGeometry, circleMaterial);
+      circle.rotation.x = -Math.PI / 2;
+      circle.position.set(spawnArea.x, 0.1, spawnArea.z);
+      scene.add(circle);
+
+      // Add a filled circle for better visibility
+      const filledCircleGeometry = new THREE.CircleGeometry(spawnArea.radius, 32);
+      const filledCircleMaterial = new THREE.MeshBasicMaterial({
+        color: teamColor,
+        transparent: true,
+        opacity: 0.1,
+        side: THREE.DoubleSide
+      });
+      const filledCircle = new THREE.Mesh(filledCircleGeometry, filledCircleMaterial);
+      filledCircle.rotation.x = -Math.PI / 2;
+      filledCircle.position.set(spawnArea.x, 0.05, spawnArea.z);
+      scene.add(filledCircle);
+    });
+
     // Create human player character (bigger size)
     const createHumanCharacter = (color) => {
       const group = new THREE.Group();
@@ -723,6 +766,17 @@ const SpaceCombatGame = () => {
         playerMeshRef.current.position.x = newX;
         playerMeshRef.current.position.z = newZ;
         playerMeshRef.current.rotation.y = newRotation;
+
+        // Invincibility visual effect (blink/pulse)
+        const timeSinceSpawn = currentTime - player.spawnTime;
+        const isInvincible = timeSinceSpawn < 3000;
+        if (isInvincible) {
+          // Blink effect: alternate visibility every 150ms
+          const blinkCycle = Math.floor(timeSinceSpawn / 150) % 2;
+          playerMeshRef.current.visible = blinkCycle === 0;
+        } else {
+          playerMeshRef.current.visible = true;
+        }
 
         // Death animation
         if (player.health <= 0 && !player.isDead) {
@@ -1359,8 +1413,20 @@ const SpaceCombatGame = () => {
         const dist = Math.sqrt(dx * dx + dz * dz);
 
         if (dist < 3.3) {
-          collisionData.playerDamage += proj.damage;
-          collisionData.particlesToCreate.push({ x: player.position.x, z: player.position.z, color: teams[selectedTeam].color });
+          // Check if player is invincible (within 3 seconds of spawning)
+          const timeSinceSpawn = Date.now() - player.spawnTime;
+          const isInvincible = timeSinceSpawn < 3000; // 3 seconds invincibility
+
+          // Check if player is in their spawn area (safe zone)
+          const isInSafeZone = isInSpawnArea(player.position, selectedTeam);
+
+          // Only apply damage if not invincible and not in safe zone
+          if (!isInvincible && !isInSafeZone) {
+            collisionData.playerDamage += proj.damage;
+            collisionData.particlesToCreate.push({ x: player.position.x, z: player.position.z, color: teams[selectedTeam].color });
+          }
+
+          // Remove projectile regardless (don't let it pass through)
           collisionData.projectilesToRemove.add(proj.id);
         }
       }
@@ -1511,6 +1577,16 @@ const SpaceCombatGame = () => {
   
   const startGame = () => {
     if (!playerName || !selectedTeam) return;
+
+    // Initialize player at their team's spawn position
+    const spawnPos = getSpawnPosition(selectedTeam);
+    setPlayer(prev => ({
+      ...prev,
+      position: { x: spawnPos.x, y: 0, z: spawnPos.z },
+      team: selectedTeam,
+      spawnTime: Date.now() // Set spawn time for initial invincibility
+    }));
+
     setGameState('playing');
   };
   
@@ -1522,6 +1598,7 @@ const SpaceCombatGame = () => {
       health: prev.maxHealth,
       isDead: false,
       deathTime: 0,
+      spawnTime: Date.now(), // Set spawn time for invincibility
       level: 1, // Reset level on death
       xp: 0,
       upgrades: {
