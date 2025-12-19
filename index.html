@@ -79,9 +79,16 @@ const SpaceCombatGame = () => {
 
   // Bot configuration state
   const [botConfig, setBotConfig] = useState({
-    black: 0,
-    purple: 0,
-    yellow: 0
+    blue: 0,
+    red: 0,
+    pink: 0
+  });
+
+  // Team scores state
+  const [teamScores, setTeamScores] = useState({
+    blue: 0,
+    red: 0,
+    pink: 0
   });
 
   // Upgrade selection state
@@ -111,16 +118,16 @@ const SpaceCombatGame = () => {
   
   // Team configurations
   const teams = {
-    black: { name: 'Black Team', color: 0x1a1a1a, glowColor: '#1a1a1a' },
-    purple: { name: 'Purple Team', color: 0x9933ff, glowColor: '#9933ff' },
-    yellow: { name: 'Yellow Team', color: 0xffff00, glowColor: '#ffff00' }
+    blue: { name: 'Blue Team', color: 0x00bfff, glowColor: '#00bfff' },
+    red: { name: 'Red Team', color: 0xff0000, glowColor: '#ff0000' },
+    pink: { name: 'Pink Team', color: 0xff69b4, glowColor: '#ff69b4' }
   };
 
-  // Team spawn areas
+  // Team spawn areas (equidistant from center and each other - equilateral triangle)
   const spawnAreas = {
-    black: { x: -30, z: -30, radius: 10 },
-    purple: { x: 30, z: 30, radius: 10 },
-    yellow: { x: 30, z: -30, radius: 10 }
+    blue: { x: 0, z: 40, radius: 10 },
+    red: { x: -34.64, z: -20, radius: 10 },
+    pink: { x: 34.64, z: -20, radius: 10 }
   };
 
   // Helper function to get spawn position for a team
@@ -259,7 +266,7 @@ const SpaceCombatGame = () => {
             damage: 10,
             color: teams[shootPlayer.team]?.color || 0xff0000,
             isPlayerProjectile: false,
-            ownerId: data.playerId
+            ownerTeam: shootPlayer.team
           };
           setProjectiles(prev => [...prev, proj]);
         }
@@ -309,6 +316,18 @@ const SpaceCombatGame = () => {
       playerName: playerName,
       team: selectedTeam
     });
+  };
+
+  const startLocalPlay = () => {
+    if (!playerName || !selectedTeam) return;
+    // Set up local play without WebSocket connection
+    setMultiplayerState(prev => ({
+      ...prev,
+      roomCode: 'OFFLINE',
+      playerId: 'local-player',
+      isConnected: false
+    }));
+    setGameState('menu');
   };
 
   const leaveRoom = () => {
@@ -1015,6 +1034,18 @@ const SpaceCombatGame = () => {
       rightLeg.castShadow = true;
       group.add(rightLeg);
 
+      // Weapon - same as player
+      const weaponGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.75);
+      const weaponMaterial = new THREE.MeshStandardMaterial({
+        color: 0x333333,
+        roughness: 0.3,
+        metalness: 0.8
+      });
+      const weapon = new THREE.Mesh(weaponGeometry, weaponMaterial);
+      weapon.position.set(0.5, 1.2, 0.6);
+      weapon.castShadow = true;
+      group.add(weapon);
+
       group.position.set(enemy.position.x, 0, enemy.position.z);
       group.rotation.y = enemy.rotation;
       group.userData.isEnemy = true;
@@ -1080,6 +1111,18 @@ const SpaceCombatGame = () => {
       rightLeg.position.set(0.3, -0.525, 0);
       rightLeg.castShadow = true;
       group.add(rightLeg);
+
+      // Weapon - same as player
+      const weaponGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.75);
+      const weaponMaterial = new THREE.MeshStandardMaterial({
+        color: 0x333333,
+        roughness: 0.3,
+        metalness: 0.8
+      });
+      const weapon = new THREE.Mesh(weaponGeometry, weaponMaterial);
+      weapon.position.set(0.5, 1.2, 0.6);
+      weapon.castShadow = true;
+      group.add(weapon);
 
       // Player name label (as sprite above head)
       const canvas = document.createElement('canvas');
@@ -1255,33 +1298,31 @@ const SpaceCombatGame = () => {
       playerDamage: 0,
       xpGain: 0,
       particlesToCreate: [],
-      rocksToUpdate: [],
-      enemiesToUpdate: []
+      rockDamage: new Map(), // Map<rockId, totalDamage>
+      enemyDamage: new Map(), // Map<enemyId, { damage, killerTeam }>
+      enemyKills: new Map() // Map<killerTeam, count>
     };
 
     // Collect all collision data first
     projectiles.forEach(proj => {
+      // Skip if projectile already marked for removal
+      if (collisionData.projectilesToRemove.has(proj.id)) return;
+
       // Check leaf pile collisions
       rocks.forEach(rock => {
         if (rock.isDestroyed) return;
+        if (collisionData.projectilesToRemove.has(proj.id)) return; // Projectile already hit something
 
         const dx = proj.position.x - rock.position.x;
         const dz = proj.position.z - rock.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 2.5 && proj.isPlayerProjectile) {
-          const newHealth = rock.health - proj.damage;
-          collisionData.rocksToUpdate.push({
-            id: rock.id,
-            health: newHealth,
-            isDestroyed: newHealth <= 0,
-            destroyedTime: newHealth <= 0 ? currentTime : rock.destroyedTime
-          });
+        if (dist < 2.75 && proj.isPlayerProjectile) {
+          // Accumulate damage for this rock
+          const currentDamage = collisionData.rockDamage.get(rock.id) || 0;
+          collisionData.rockDamage.set(rock.id, currentDamage + proj.damage);
           collisionData.particlesToCreate.push({ x: rock.position.x, z: rock.position.z, color: 0x8B4513 });
           collisionData.projectilesToRemove.add(proj.id);
-          if (newHealth <= 0) {
-            collisionData.xpGain += 20;
-          }
         }
       });
 
@@ -1290,35 +1331,34 @@ const SpaceCombatGame = () => {
         enemies.forEach(enemy => {
           if (enemy.isDead) return;
           if (proj.ownerTeam === enemy.team) return; // Skip same team
+          if (collisionData.projectilesToRemove.has(proj.id)) return; // Projectile already hit something
 
           const dx = proj.position.x - enemy.position.x;
           const dz = proj.position.z - enemy.position.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
 
-          if (dist < 3) {
-            const newHealth = enemy.health - proj.damage;
-            collisionData.enemiesToUpdate.push({
-              id: enemy.id,
-              health: newHealth,
-              isDead: newHealth <= 0,
-              deathTime: newHealth <= 0 ? currentTime : enemy.deathTime
+          if (dist < 3.3) {
+            // Accumulate damage for this enemy with killer team tracking
+            const currentData = collisionData.enemyDamage.get(enemy.id) || { damage: 0, killerTeam: proj.ownerTeam };
+            collisionData.enemyDamage.set(enemy.id, {
+              damage: currentData.damage + proj.damage,
+              killerTeam: proj.ownerTeam // Track who shot them
             });
             collisionData.particlesToCreate.push({ x: enemy.position.x, z: enemy.position.z, color: teams[enemy.team].color });
             collisionData.projectilesToRemove.add(proj.id);
-            if (newHealth <= 0) {
-              collisionData.xpGain += 50 * enemy.level;
-            }
           }
         });
       }
 
       // Check player collision with projectiles from different teams
       if (proj.ownerTeam && proj.ownerTeam !== selectedTeam) {
+        if (collisionData.projectilesToRemove.has(proj.id)) return; // Projectile already hit something
+
         const dx = proj.position.x - player.position.x;
         const dz = proj.position.z - player.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 3) {
+        if (dist < 3.3) {
           collisionData.playerDamage += proj.damage;
           collisionData.particlesToCreate.push({ x: player.position.x, z: player.position.z, color: teams[selectedTeam].color });
           collisionData.projectilesToRemove.add(proj.id);
@@ -1331,17 +1371,53 @@ const SpaceCombatGame = () => {
       setProjectiles(prev => prev.filter(p => !collisionData.projectilesToRemove.has(p.id)));
     }
 
-    if (collisionData.rocksToUpdate.length > 0) {
+    // Update rocks with accumulated damage
+    if (collisionData.rockDamage.size > 0) {
       setRocks(prev => prev.map(rock => {
-        const update = collisionData.rocksToUpdate.find(u => u.id === rock.id);
-        return update ? { ...rock, ...update } : rock;
+        const damage = collisionData.rockDamage.get(rock.id);
+        if (damage) {
+          const newHealth = rock.health - damage;
+          if (newHealth <= 0) {
+            collisionData.xpGain += 20;
+          }
+          return {
+            ...rock,
+            health: newHealth,
+            isDestroyed: newHealth <= 0,
+            destroyedTime: newHealth <= 0 ? Date.now() : rock.destroyedTime
+          };
+        }
+        return rock;
       }));
     }
 
-    if (collisionData.enemiesToUpdate.length > 0) {
+    // Update enemies with accumulated damage
+    if (collisionData.enemyDamage.size > 0) {
       setEnemies(prev => prev.map(enemy => {
-        const update = collisionData.enemiesToUpdate.find(u => u.id === enemy.id);
-        return update ? { ...enemy, ...update } : enemy;
+        const damageData = collisionData.enemyDamage.get(enemy.id);
+        if (damageData) {
+          const newHealth = enemy.health - damageData.damage;
+          if (newHealth <= 0) {
+            // Give XP only to player
+            if (damageData.killerTeam === selectedTeam) {
+              collisionData.xpGain += 50 * enemy.level;
+            }
+            // Track kill for team score
+            if (damageData.killerTeam) {
+              setTeamScores(prevScores => ({
+                ...prevScores,
+                [damageData.killerTeam]: prevScores[damageData.killerTeam] + 1
+              }));
+            }
+          }
+          return {
+            ...enemy,
+            health: newHealth,
+            isDead: newHealth <= 0,
+            deathTime: newHealth <= 0 ? Date.now() : enemy.deathTime
+          };
+        }
+        return enemy;
       }));
     }
 
@@ -1745,6 +1821,33 @@ const SpaceCombatGame = () => {
               </button>
             </div>
 
+            <button
+              onClick={startLocalPlay}
+              disabled={!playerName || !selectedTeam}
+              style={{
+                width: '100%',
+                padding: '20px',
+                fontSize: '18px',
+                fontFamily: '"Orbitron", sans-serif',
+                fontWeight: 900,
+                background: playerName && selectedTeam
+                  ? 'linear-gradient(135deg, #00aaff, #0066aa)'
+                  : 'rgba(100, 100, 100, 0.5)',
+                border: 'none',
+                borderRadius: '10px',
+                color: '#fff',
+                cursor: playerName && selectedTeam ? 'pointer' : 'not-allowed',
+                textTransform: 'uppercase',
+                letterSpacing: '2px',
+                marginBottom: '20px',
+                boxShadow: playerName && selectedTeam
+                  ? '0 0 20px rgba(0, 170, 255, 0.5)'
+                  : 'none'
+              }}
+            >
+              PLAY OFFLINE
+            </button>
+
             <div style={{ fontSize: '16px', marginBottom: '15px', opacity: 0.8 }}>OR</div>
 
             <input
@@ -1870,25 +1973,41 @@ const SpaceCombatGame = () => {
             fontSize: '32px',
             marginBottom: '30px',
             padding: '20px 40px',
-            background: 'rgba(0, 255, 255, 0.2)',
-            border: '3px solid #00ffff',
+            background: multiplayerState.roomCode === 'OFFLINE'
+              ? 'rgba(0, 170, 255, 0.2)'
+              : 'rgba(0, 255, 255, 0.2)',
+            border: multiplayerState.roomCode === 'OFFLINE'
+              ? '3px solid #00aaff'
+              : '3px solid #00ffff',
             borderRadius: '15px',
             display: 'inline-block',
-            boxShadow: '0 0 30px rgba(0, 255, 255, 0.5)'
+            boxShadow: multiplayerState.roomCode === 'OFFLINE'
+              ? '0 0 30px rgba(0, 170, 255, 0.5)'
+              : '0 0 30px rgba(0, 255, 255, 0.5)'
           }}>
-            ROOM CODE: <span style={{ color: '#00ffff', fontWeight: 900, letterSpacing: '8px' }}>
-              {multiplayerState.roomCode}
-            </span>
+            {multiplayerState.roomCode === 'OFFLINE' ? (
+              <span style={{ color: '#00aaff', fontWeight: 900, letterSpacing: '8px' }}>
+                OFFLINE MODE
+              </span>
+            ) : (
+              <>
+                ROOM CODE: <span style={{ color: '#00ffff', fontWeight: 900, letterSpacing: '8px' }}>
+                  {multiplayerState.roomCode}
+                </span>
+              </>
+            )}
           </div>
 
-          <p style={{
-            fontSize: '16px',
-            marginBottom: '30px',
-            opacity: 0.8,
-            letterSpacing: '2px'
-          }}>
-            Share this code with your friends to join!
-          </p>
+          {multiplayerState.roomCode !== 'OFFLINE' && (
+            <p style={{
+              fontSize: '16px',
+              marginBottom: '30px',
+              opacity: 0.8,
+              letterSpacing: '2px'
+            }}>
+              Share this code with your friends to join!
+            </p>
+          )}
 
           <div style={{
             background: 'rgba(0, 0, 0, 0.6)',
@@ -2305,7 +2424,59 @@ const SpaceCombatGame = () => {
             ROCKS: {rocks.length}
           </div>
         </div>
-        
+
+        {/* Team Scoreboard */}
+        <div style={{
+          position: 'absolute',
+          top: '20px',
+          right: '20px',
+          background: 'rgba(0, 0, 0, 0.9)',
+          padding: '20px 30px',
+          borderRadius: '15px',
+          border: '3px solid #00ffff',
+          fontSize: '16px',
+          minWidth: '250px',
+          boxShadow: '0 0 20px rgba(0, 255, 255, 0.3)'
+        }}>
+          <div style={{
+            fontSize: '20px',
+            fontWeight: 900,
+            marginBottom: '15px',
+            color: '#00ffff',
+            textAlign: 'center',
+            letterSpacing: '2px'
+          }}>
+            TEAM SCORES
+          </div>
+          {Object.entries(teams).map(([teamKey, team]) => (
+            <div key={teamKey} style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '10px',
+              padding: '10px',
+              background: `linear-gradient(90deg, ${team.glowColor}33, transparent)`,
+              borderLeft: `4px solid ${team.glowColor}`,
+              borderRadius: '5px'
+            }}>
+              <div style={{
+                fontWeight: 700,
+                color: team.glowColor,
+                fontSize: '16px'
+              }}>
+                {team.name.toUpperCase()}
+              </div>
+              <div style={{
+                fontWeight: 900,
+                fontSize: '24px',
+                color: team.glowColor
+              }}>
+                {teamScores[teamKey]}
+              </div>
+            </div>
+          ))}
+        </div>
+
         {/* Death Screen */}
         {player.health <= 0 && (
           <div style={{
